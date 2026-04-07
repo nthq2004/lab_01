@@ -41,7 +41,7 @@ export class Monitor extends BaseComponent {
 
         setInterval(() => {
             this.flashState = !this.flashState;
-            this.handleAudio();
+            // this.handleAudio();   //暂时不启用声音，避免频繁切换导致的性能问题和用户体验问题。可以在后续版本中根据需要启用，并优化声音播放逻辑以减少干扰。
         }, 500);
     }
 
@@ -259,9 +259,6 @@ export class Monitor extends BaseComponent {
                 isPhysicalActive: true,
                 timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)
             });
-            // this.isMuted = false;
-            // 报警产生后，可以清除计时器防止重复触发（直到下一次故障发生）
-            // 或者保留计时器，靠上面的 existing 判断拦截
         }
     }
 

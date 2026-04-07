@@ -3,15 +3,18 @@ import { CircuitSolver } from './tools/CircuitSolver.js';  // 电路求解工具
 import { PneumaticSolver } from './tools/PneumaticSolver.js'; // 气路求解工具
 import { Show } from './tools/Show.js'; // 提示展示工具
 
-import { LeakDetector } from './components/LeakDetector.js';
+import { LeakDetector } from './components/LeakDetector.js'; // 泄漏检测器组件
 import { AirBottle } from './components/AirBottle.js'; // 气瓶组件
 import { PressRegulator } from './components/PressRegulator.js';  // 减压阀组件
 import { PressMeter } from './components/PressMeter.js';  // 压力表组件
-import { TeeConnector } from './components/TeeConnector.js';
-import { StopValve } from './components/StopValve.js';
+import { TeeConnector } from './components/TeeConnector.js'; // 三通连接器组件
+import { StopValve } from './components/StopValve.js'; // 截止阀组件
+import { Pump } from './components/Pump.js';  // 泵组件
+import { Cooler } from './components/Cooler.js';  // 冷却器组件
+import { Engine } from './components/Engine.js';  // 发动机组件
 
 import { PIDController } from './components/PID.js';  // PID控制器组件
-import { OvenSystem } from './components/OvenSystem.js';
+import { OvenSystem } from './components/OvenSystem.js'; // 烘箱系统组件
 import { ElecValve } from './components/ElecValve.js';  // 电动阀组件
 
 import { LVDTPressureSensor } from './components/LVDT.js';  // 差动变压器组件
@@ -39,6 +42,7 @@ import { Diode } from './components/Diode.js';  // 二极管组件
 import { Transistor } from './components/Transistor.js';  // 三极管组件
 
 import { RealVariResistor } from './components/RealVariResistor.js';
+import { CoolingSystem } from './components/CoolingSystem.js';
 
 
 /**
@@ -104,12 +108,17 @@ export class ControlSystem {
         // 1. 实例化组件，传入 this 以便组件能够调用 handlePortClick 和 redrawAll
         const componentConfigs = [
 
-            { Class: Monitor, id: 'monitor', x: 1100, y: 430 },
-            { Class: PIDController, id: 'pid', x: 600, y: 50 },
-            { Class: TempTransmitter, id: 'ttrans', x: 300, y: 300 },
-            { Class: ElecValve, id: 'actuator', x: 400, y: 400 },
-            { Class: DCPower, id: 'dcpower', x: 1150, y: 130 },
-            { Class: AmpMeter, id: 'ampmeter', x: 400, y: 150 },
+            { Class: Monitor, id: 'monitor', x: 900, y: 550 },
+            { Class: PIDController, id: 'pid', x: 660, y: 20 },
+            { Class: TempTransmitter, id: 'ttrans', x: 100, y: 200 },
+            { Class: CoolingSystem, id: 'coolsys', x: 130, y: 450 },            
+            { Class: TeeConnector, id: 'tconn', x: 10, y: 680,direction:'right' },
+            { Class: Pump, id: 'pump', x: 28, y: 580 },  
+            { Class: Engine, id: 'engine', x: 300, y: 380 },                         
+            { Class: ElecValve, id: 'valve', x: 500, y: 660 },
+            { Class: Cooler, id: 'cooler', x: 150, y: 800 },            
+            { Class: DCPower, id: 'dcpower', x: 1200, y: 130 },
+            { Class: AmpMeter, id: 'ampmeter', x: 350, y: 100 },
             { Class: Multimeter, id: 'multimeter', x: 1520, y: 30 },
             // { Class: Oscilloscope_tri, id: 'osc', x: 1280, y: 400 },
 
@@ -586,14 +595,14 @@ export class ControlSystem {
         this.conns = [
             { from: 'pid_wire_vcc', to: 'dcpower_wire_p', type: 'wire' },
             { from: 'pid_wire_gnd', to: 'dcpower_wire_n', type: 'wire' },
-            // { from: 'oven_wire_l', to: 'ttrans_wire_l', type: 'wire' },
-            // { from: 'oven_wire_r', to: 'ttrans_wire_m', type: 'wire' },
-            // { from: 'oven_wire_r', to: 'ttrans_wire_r', type: 'wire' },
+            { from: 'coolsys_wire_l', to: 'ttrans_wire_l', type: 'wire' },
+            { from: 'coolsys_wire_r', to: 'ttrans_wire_m', type: 'wire' },
+            { from: 'coolsys_wire_r', to: 'ttrans_wire_r', type: 'wire' },
             { from: 'pid_wire_pi1', to: 'ampmeter_wire_p', type: 'wire' },
             { from: 'ampmeter_wire_n', to: 'ttrans_wire_p', type: 'wire' },
             { from: 'ttrans_wire_n', to: 'pid_wire_ni1', type: 'wire' },
-            // { from: 'pid_wire_no1', to: 'rplus_wire_r', type: 'wire' },
-            // { from: 'pid_wire_po1', to: 'rplus_wire_l', type: 'wire' },
+            { from: 'pid_wire_no1', to: 'valve_wire_r', type: 'wire' },
+            { from: 'pid_wire_po1', to: 'valve_wire_l', type: 'wire' },
 
             { from: 'pid_wire_b1', to: 'monitor_wire_b1', type: 'wire' },
             { from: 'pid_wire_a1', to: 'monitor_wire_a1', type: 'wire' }

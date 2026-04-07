@@ -131,10 +131,6 @@ export class CircuitSolver {
         });
         this.clusters = Object.values(clusterGroups);
     }
-    _getDevicePorts(id) {
-        const sfx = ['_l', '_m', '_r', '_p', '_n', '_v', '_ma', '_com', '_COM', '_NO'];
-        return sfx.map(s => `${id}_wire${s}`).filter(p => this.portToCluster.has(p));
-    }
     /**
      * 2. 核心求解 (节点电压法)
      */
@@ -222,16 +218,17 @@ export class CircuitSolver {
         // 5. 统计额外的电压源方程数量 (PID 的 pi1 配电端 和 PWM 输出端)
         let extraEqCount = 0;
         pidDevs.forEach(pid => {
-            if (this.portToCluster.has(`${pid.id}_wire_pi1`)) extraEqCount++;
-            if (pid.outModes.CH1 === 'PWM' && this.portToCluster.has(`${pid.id}_wire_po1`)) extraEqCount++;
-            if (pid.outModes.CH2 === 'PWM' && this.portToCluster.has(`${pid.id}_wire_po2`)) extraEqCount++;
+            if (this.portToCluster.has(`${pid.id}_wire_pi1`) && this.portToCluster.has(`${pid.id}_wire_ni1`)) extraEqCount++;
+            if (this.portToCluster.has(`${pid.id}_wire_po1`)&& this.portToCluster.has(`${pid.id}_wire_no1`) ) extraEqCount++;
+            if (this.portToCluster.has(`${pid.id}_wire_po2`) && this.portToCluster.has(`${pid.id}_wire_no2`)) extraEqCount++;
         });
+        let tcEqCount = 0;
         tcDevs.forEach(tc => {
             if (this.portToCluster.has(`${tc.id}_wire_r`) && this.portToCluster.has(`${tc.id}_wire_l`)) {
-                extraEqCount++; // 每个热电偶占用一个电流变量方程
+                tcEqCount++; // 每个热电偶占用一个电流变量方程
             }
         });
-        const totalSize = mSize + extraEqCount + opAmps.length + oscDevs.length + lvdtDevs.length; // 总方程数量 = 节点电压方程 + 额外电压源方程 + 运放模式方程 + 示波器约束方程 + 压力变送器方程
+        const totalSize = mSize + extraEqCount+tcEqCount + opAmps.length + oscDevs.length + lvdtDevs.length; // 总方程数量 = 节点电压方程 + 额外电压源方程 + 运放模式方程 + 示波器约束方程 + 压力变送器方程
         let results = new Float64Array(totalSize);
         let maxIterations = 200; // 运放状态切换很快，通常2-3次就收敛
 
@@ -304,7 +301,7 @@ export class CircuitSolver {
                 this._fillMatrix(G, B, nodeMap, cP, cN, dev._lastG);
             });
 
-            // 3. 【新增】注入 PID 控制器 
+            // 3. 注入 PID 控制器 
             let currentVSourceIdx = mSize; // 额外方程起始索引       
             pidDevs.forEach(pid => {
                 if (!pid.powerOn) {
@@ -313,6 +310,26 @@ export class CircuitSolver {
                     return;
                 }
                 const p = `${pid.id}_wire_`;
+                // --- 内部处理函数：限压恒流注入 ---
+                const injectLimitedCurrent = (cPos, cNeg, targetMA, maxV) => {
+                    if (cPos === undefined || cNeg === undefined) return;
+                    const targetA = targetMA / 1000;
+                    // 1. 获取两点间的等效电阻 (假设你已有该工具函数)
+                    const rReq = this._getEquivalentResistance(
+                        this.clusters[cPos],
+                        this.clusters[cNeg],
+                        this.clusters
+                    );
+                    // 2. 逻辑判断：如果电流产生的电压将超过 maxV，或者处于开路状态 (rReq 极大部分)
+                    if (rReq * targetA > maxV || rReq > 1000000) {
+                        // 切换为电压源注入，模拟饱和状态（最高输出电压）
+                        this._addVoltageSourceToMNA(G, B, nodeMap, cPos, cNeg, maxV, currentVSourceIdx++);
+                    } else {
+                        // 负载正常，执行恒流注入
+                        this._addCurrentSourceToMNA(B, nodeMap, cPos, cNeg, targetA);
+                        currentVSourceIdx++; // 虽然电流源不直接占用电压变量，但我们仍然需要为潜在的饱和状态预留索引，以便后续切换时使用
+                    }
+                };
 
                 // 3.1 4-20mA 输入回路: pi1(24V馈电) 和 ni(250Ω内阻)
                 const cPi1 = this.portToCluster.get(`${p}pi1`);
@@ -329,7 +346,7 @@ export class CircuitSolver {
                 const cNo1 = this.portToCluster.get(`${p}no1`);
                 if (cPo1 !== undefined && cNo1 !== undefined) {
                     if (pid.outModes.CH1 === '4-20mA') {
-                        this._addCurrentSourceToMNA(B, nodeMap, cPo1, cNo1, pid.output1mA / 1000);
+                        injectLimitedCurrent(cPo1, cNo1, pid.output1mA, 23.5);
                     } else if (pid.outModes.CH1 === 'PWM') {
                         const cPo1 = this.portToCluster.get(`${p}po1`);
                         const cNo1 = this.portToCluster.get(`${p}no1`);
@@ -341,16 +358,13 @@ export class CircuitSolver {
 
                         this._addVoltageSourceToMNA(G, B, nodeMap, cPo1, cNo1, vTarget, currentVSourceIdx++);
                     }
-                } else {
-
-                }
-
+                } 
                 // 3.3 4-20mA 输出 / PWM 输出 (共用端子 po, no)
                 const cPo2 = this.portToCluster.get(`${p}po2`);
                 const cNo2 = this.portToCluster.get(`${p}no2`);
                 if (cPo2 !== undefined && cNo2 !== undefined) {
                     if (pid.outModes.CH2 === '4-20mA') {
-                        this._addCurrentSourceToMNA(B, nodeMap, cPo2, cNo2, pid.output2mA / 1000);
+                        injectLimitedCurrent(cPo2, cNo2, pid.output2mA, 23.5);
                     } else if (pid.outModes.CH2 === 'PWM') {
                         const cPo2 = this.portToCluster.get(`${p}po2`);
                         const cNo2 = this.portToCluster.get(`${p}no2`);
@@ -363,7 +377,7 @@ export class CircuitSolver {
                 }
             });
             // 3.2 在循环内部，填充 PID 之后，填充热电偶
-            let tcVIdx = currentVSourceIdx;
+            let tcVIdx = mSize + extraEqCount; // 热电偶的电流变量索引紧跟在 PID 相关的额外方程之后
             tcDevs.forEach(tc => {
                 const cP = this.portToCluster.get(`${tc.id}_wire_r`); // 正极
                 const cN = this.portToCluster.get(`${tc.id}_wire_l`); // 负极
@@ -375,7 +389,7 @@ export class CircuitSolver {
                 }
             });
             // 4. 【关键修复】运放注入：必须在每次迭代根据 internalState 决定矩阵系数
-            let opVIdx = tcVIdx;
+            let opVIdx = mSize + extraEqCount + tcEqCount; // 运放相关方程索引紧跟在 PID 和热电偶的额外方程之后
             opAmps.forEach(op => {
                 const cP = this.portToCluster.get(`${op.id}_wire_p`);
                 const cN = this.portToCluster.get(`${op.id}_wire_n`);
@@ -523,7 +537,7 @@ export class CircuitSolver {
                 this._addCurrentSourceToMNA(B, nodeMap, cL, cR, iEq);
             });
             // 8. 注入示波器模型
-            let oscVIdx = opVIdx;
+            let oscVIdx = mSize + extraEqCount+tcEqCount + opAmps.length; // 示波器相关方程索引紧跟在 PID、热电偶和运放的额外方程之后
             oscDevs.forEach(dev => {
                 const cIn = this.portToCluster.get(`${dev.id}_wire_l`);
                 const cOut = this.portToCluster.get(`${dev.id}_wire_r`);
@@ -538,7 +552,7 @@ export class CircuitSolver {
             });
 
             // 9. 注入压力传感器模型 (差动变压器/LVDT)
-            let ptVIdx = oscVIdx;
+            let ptVIdx = mSize + extraEqCount+tcEqCount + opAmps.length+oscDevs.length; // 压力传感器相关方程索引紧跟在 PID、热电偶、运放和示波器的额外方程之后
             lvdtDevs.forEach(dev => {
                 const ports = ['p', 'n', 'outp', 'outn'].map(k => this.portToCluster.get(`${dev.id}_wire_${k}`));
                 const [cInP, cInN, cOutP, cOutN] = ports;
@@ -1300,7 +1314,7 @@ export class CircuitSolver {
                         if (mode1 === '4-20mA') {
                             // 模拟量模式：直接看瞬时电压/电流是否丢失
                             out1Fault = Math.abs(vOut1) < 0.01;
-                            vOut1 = vOut1 * 16;
+                            vOut1 = pid.OUT;
                         } else {
                             // PWM/开关模式：测量输出端口之间的外部负载电阻
                             // 如果电阻过大（如 > 1000Ω），说明外部回路没接执行器（如 SSR 或电磁阀）
@@ -1310,12 +1324,12 @@ export class CircuitSolver {
                             } else {
                                 out1Fault = true; // 引脚没连线，肯定故障
                             }
-                            vOut1 = vOut1 * 3;
+                            vOut1 = vOut1*8.33;
                         }
                         // 通道 2 判定 (同理)
                         if (mode2 === '4-20mA') {
                             out2Fault = Math.abs(vOut2) < 0.01;
-                            vOut2 = vOut2 * 16;
+                            vOut2 = pid.OUT ;
                         } else {
                             if (p2Idx !== undefined && n2Idx !== undefined) {
                                 const r2 = this._getEquivalentResistance(this.clusters[p2Idx], this.clusters[n2Idx], this.clusters);
@@ -1323,13 +1337,13 @@ export class CircuitSolver {
                             } else {
                                 out2Fault = true;
                             }
-                            vOut2 = vOut2 * 3;
+                            vOut2 = vOut2 * 8.33;
                         }
                         dev.update({
                             pv: pid.PV > 0 ? pid.PV : 0,
                             sv: pid.SV,
-                            out1: vOut1,
-                            out2: vOut2,
+                            out1: pid.outSelection === 'CH1' || pid.outSelection === 'BOTH'?vOut1:0,
+                            out2: pid.outSelection === 'CH2' || pid.outSelection === 'BOTH'?vOut2:0,
                             fault: {
                                 transmitter: transFault,
                                 ovenTemp: pid.PV >= pid.alarm.HH, // 假设 PID 内部有 HH 报警状态

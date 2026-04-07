@@ -13,7 +13,7 @@ export class PIDController extends BaseComponent {
         // --- 核心参数 ---
         this.mode = "MAN";
         this.APP = "NORMAL";
-        this.direction = "DIR";
+        this.direction = "REV";
         this.atActive = false;
         this.PV = 0;
         this.SV = 60;

@@ -62,14 +62,14 @@ export class BaseComponent {
     }
 
     // 新：支持 polarity 参数（电气端口 'p' 为红色），pipe 端口由三矩形组成，接口支持连线
-    addPort(x, y, id, type = 'wire', polarity = null) {
+    addPort(x, y, id, type = 'wire', polarity = null, opacity = 1) {
         // 生成组件内唯一端口 id（保留原短 id 作为传参，但向系统传送合成 id 可选）
         const composedId = `${this.id}_${type}_${id}`;
 
         if (type === 'pipe') {
             // 管路端口由：引压管(tube)、密封箍(seal)、接口(iface) 三部分矩形组成
             const fillColor = (polarity === 'in') ? '#ff0000' : '#1395eb';
-            const pg = new Konva.Group({ x, y, name: composedId });
+            const pg = new Konva.Group({ x, y, name: composedId, opacity: opacity });
 
             const tube = new Konva.Rect({ x: -10, y: -6, width: 20, height: 12, fill: '#95a5a6', stroke: '#2c3e50', strokeWidth: 1 });
             const seal = new Konva.Rect({ x: -8, y: -10, width: 16, height: 20, fill: '#7f8c8d', cornerRadius: 3 });

@@ -7,7 +7,10 @@ import { BaseComponent } from './BaseComponent.js';
 export class Pump extends BaseComponent {
     constructor(config, sys) {
         super(config, sys);
-        
+        this.type = 'Pump';
+        this.cache = 'fixed'; // 使用固定缓存，提升性能
+        this.pumpOn = false; // 泵的状态：开/关
+
         // --- 1. 尺寸与布局定义 ---
         this.totalW = 160;   // 整体底座宽度
         this.totalH = 100;   // 整体底座高度
@@ -17,18 +20,20 @@ export class Pump extends BaseComponent {
         this.initMainFrame();  // 初始化整体外框
         this.initControlBox(); // 初始化控制箱及居中按钮
         this.initPumpBody();   // 初始化泵体与三叶片叶轮
-        
+
         // --- 2. 端口定义 ---
         // 端口位置相对于 group 中心，确保与泵壳边缘对齐
-        this.addPort(this.pumpOffX, -50, 'in', 'pipe');  
-        this.addPort(this.pumpOffX, 50, 'out', 'pipe');  
+        this.addPort(this.pumpOffX, -50, 'in', 'pipe');
+        this.addPort(this.pumpOffX, 50, 'out', 'pipe');
+
+        this._physicsTimer = setInterval(() => this.update(this.pumpOn), 50);
     }
 
     /**
      * 绘制包络矩形底座
      */
     initMainFrame() {
-        const labelText = new Konva.Text({ x: -this.totalW / 2+5, y: -this.totalH / 2-20, width: this.w, text: '高温淡水泵', fontSize: 18, align: 'center', fill: '#2c3e50', fontStyle: 'bold' });
+        const labelText = new Konva.Text({ x: -this.totalW / 2 + 5, y: -this.totalH / 2 - 20, width: this.w, text: '高温淡水泵', fontSize: 18, align: 'center', fill: '#2c3e50', fontStyle: 'bold' });
         this.mainFrame = new Konva.Rect({
             x: -this.totalW / 2,
             y: -this.totalH / 2,
@@ -41,7 +46,7 @@ export class Pump extends BaseComponent {
             shadowBlur: 5,
             shadowOpacity: 0.1
         });
-        this.group.add(labelText,this.mainFrame);
+        this.group.add(labelText, this.mainFrame);
     }
 
     /**
@@ -68,21 +73,21 @@ export class Pump extends BaseComponent {
 
         // 启动按钮 (位于中心点上方)
         this.btnStart = this.createLightButton({
-            x: xPos + this.boxW / 2+15,
+            x: xPos + this.boxW / 2 + 15,
             y: centerY - spacing,
             color: '#27ae60',
             text: '启动',
-            fontSize:16,
-            onClick: () => { this.sys.state.pumpOn = true; }
+            fontSize: 16,
+            onClick: () => { this.pumpOn = true; }
         });
 
         // 停止按钮 (位于中心点下方)
         this.btnStop = this.createLightButton({
-            x: xPos + this.boxW / 2+15,
+            x: xPos + this.boxW / 2 + 15,
             y: centerY + spacing,
             color: '#e74c3c',
             text: '停止',
-            onClick: () => { this.sys.state.pumpOn = false; }
+            onClick: () => { this.pumpOn = false; }
         });
 
         this.group.add(this.btnStart.node, this.btnStop.node);
@@ -93,7 +98,7 @@ export class Pump extends BaseComponent {
      */
     createLightButton({ x, y, color, text, onClick }) {
         const btnGroup = new Konva.Group({ x, y });
-        
+
         // 按钮圆形主体
         const btnCircle = new Konva.Circle({
             radius: 11,
@@ -123,7 +128,7 @@ export class Pump extends BaseComponent {
         btnGroup.on('mousedown', () => {
             btnCircle.scale({ x: 0.9, y: 0.9 });
             onClick();
-            this.sys.layer.draw();
+            this._refreshCache(); // 更新缓存以反映状态变化
         });
         btnGroup.on('mouseup mouseleave', () => {
             btnCircle.scale({ x: 1, y: 1 });
@@ -135,9 +140,9 @@ export class Pump extends BaseComponent {
     /**
      * 初始化泵体及三叶片叶轮
      */
-/**
-     * 初始化泵体及高级三叶片叶轮
-     */
+    /**
+         * 初始化泵体及高级三叶片叶轮
+         */
     initPumpBody() {
         this.pumpGroup = new Konva.Group({ x: this.pumpOffX, y: 0 });
 
@@ -155,7 +160,7 @@ export class Pump extends BaseComponent {
 
         // 2. 叶轮组
         this.impeller = new Konva.Group();
-        
+
         // 中心轴毂
         const hub = new Konva.Circle({
             radius: 6,
@@ -216,5 +221,6 @@ export class Pump extends BaseComponent {
             this.btnStop.light.shadowColor(this.btnStop.color);
             this.btnStop.light.shadowBlur(10);
         }
+        this._refreshCache(); // 更新缓存以反映状态变化
     }
 }
