@@ -22,9 +22,9 @@ export class Engine extends BaseComponent {
         this.initFuelKnob(); // 新增：初始化喷油旋钮
 
         // 冷却水进口：位于机体右侧边缘，靠近油底壳上方
-        this.addPort(this.w - 10, this.h - 40, 'in', 'pipe');
+        this.addPort(this.w - 10, this.h - 40, 'i', 'pipe','in');
         // 冷却水出口：位于机体左侧边缘，紧贴烟管下方
-        this.addPort(10, 70, 'out', 'pipe');
+        this.addPort(10, 70, 'o', 'pipe');
         this._physicsTimer = setInterval(() => this.update(this.engOn), 50);
     }
 

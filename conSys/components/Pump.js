@@ -23,8 +23,8 @@ export class Pump extends BaseComponent {
 
         // --- 2. 端口定义 ---
         // 端口位置相对于 group 中心，确保与泵壳边缘对齐
-        this.addPort(this.pumpOffX, -50, 'in', 'pipe');
-        this.addPort(this.pumpOffX, 50, 'out', 'pipe');
+        this.addPort(this.pumpOffX, -50, 'i', 'pipe','in');
+        this.addPort(this.pumpOffX, 50, 'o', 'pipe');
 
         this._physicsTimer = setInterval(() => this.update(this.pumpOn), 50);
     }
@@ -78,7 +78,7 @@ export class Pump extends BaseComponent {
             color: '#27ae60',
             text: '启动',
             fontSize: 16,
-            onClick: () => { this.pumpOn = true; }
+            onClick: () => { if(this.sys.comps.pt.checkPipesReady())this.pumpOn = true; }
         });
 
         // 停止按钮 (位于中心点下方)
@@ -210,6 +210,9 @@ export class Pump extends BaseComponent {
 
             this.btnStop.light.fill('#333');
             this.btnStop.light.shadowBlur(0);
+            if(!this.sys.comps.pt.checkPipesReady()){
+                this.pumpOn = false;
+            }
         } else {
             this.shell.stroke('#34495e');
 

@@ -192,18 +192,89 @@ export class CoolingSystem extends BaseComponent {
     // ═══════════════════════════════════════════════════════════
     // 公开 API
     // ═══════════════════════════════════════════════════════════
+    checkPipesReady() {
+        const requiredPipes = [
+            { from: 'engine_pipe_o', to: 'pump_pipe_i', type: 'pipe' },
+            { from: 'pump_pipe_o', to: 'tconn_pipe_l', type: 'pipe' },
+            { from: 'tconn_pipe_u', to: 'valve_pipe_u', type: 'pipe' },
+            { from: 'tconn_pipe_r', to: 'cooler_pipe_i', type: 'pipe' },
+            { from: 'cooler_pipe_o', to: 'valve_pipe_l', type: 'pipe' },
+            { from: 'valve_pipe_r', to: 'engine_pipe_i', type: 'pipe' }
+        ];
+        const currentConns = this.sys.conns;
+        // 1. 辅助函数：判断两个点之间是否有管路（忽略用户拉线的先后顺序）
+        const isConnected = (req) => {
+            return currentConns.some(curr =>
+                curr.type === 'pipe' && this.sys._connEqual(curr, req)   // 反向
+            );
+        };
+        // 2. 检查所有必须的管路是否都已连接（无论方向）
+        const allConnected = requiredPipes.every(req => isConnected(req));
+
+        if (allConnected) {
+            return true;
+        }
+        return false;
+    }
+
+    renerPipesFlow() {
+        if (this.sys.comps.pump.pumpOn) {
+            this.sys.lineLayer.find('.flow').forEach(flowLine => {
+                const key = flowLine.getAttr('connKey');
+                let speed = 3;      // 基础速度
+                let volume = 1;     // 基础流量感（宽度/间距）
+                // --- 支路流量逻辑分配 ---
+                // A. 冷却器支路 (包含通往散热器和散热器出来的管子)
+                if (key.includes('cooler') || key.includes('tconn_pipe_r') || key.includes('valve_pipe_l')) {
+                    // 流量正比于阀门开度
+                    volume = this.sys.comps.valve.currentPos;
+                    speed = volume * 8; // 速度随开度加快
+                }
+                // B. 旁通支路 (TPipe 直接连到 Valve 的那条)
+                else if (key.includes('tconn_pipe_u') && key.includes('valve_pipe_u')) {
+                    // 流量反比于阀门开度
+                    volume = 1 - this.sys.comps.valve.currentPos;
+                    speed = volume * 8;
+                }
+                // C. 主干道 (水泵到三通，或调节阀回到主机)
+                else {
+                    volume = 1;
+                    speed = 5;
+                }
+                // --- 应用视觉效果 ---
+                // 1. 速度效果：改变 dashOffset 的步进值
+                flowLine.dashOffset(flowLine.dashOffset() - speed);
+                // 2. 宽度效果：流量越大，虚线越粗 (在基础4px上浮动)
+                flowLine.strokeWidth(1 + volume * 5);
+                // 3. 密度效果：流量越大，虚线越长越密
+                // 流量小时(volume趋于0)，虚线变成很短的点；流量大时变成长条
+                if (volume < 0.05) {
+                    flowLine.visible(false); // 流量极小时隐藏，模拟断流
+                } else {
+                    flowLine.visible(true);
+                    flowLine.dash([volume * 15, 10]); // 动态调整 [实线长度, 间隔]
+                }
+            });
+        } else {
+            this.sys.lineLayer.find('.flow').forEach(flowLine => {
+                flowLine.visible(false);
+            });
+        }
+    }
+
     update() {
         const dt = 0.1; // 物理更新步长固定为 100ms
 
         //1. 温度物理模型：加热产生热量，风扇和被动散热带走热量，温度随热量变化
-        const heatGen = this.sys.comps.engine.engOn?this.sys.comps.engine.fuelRate * 30:0; // 加热功率，0~5
-        const activeCool = this.sys.comps.pump.pumpOn? this.sys.comps.valve.currentPos*(this.temp-this.ambientT) * 0.4:0; // 风扇散热，0~(temp-ambientT)，与温差成正比
-        const passiveCool = Math.max(0, this.temp - this.ambientT) * 0.002; // 被动散热，温差越大散热越快
-        const coreInertia = 10; // 核心温度惯性，数值越大温度变化越慢
+        const heatGen = this.sys.comps.engine.engOn ? this.sys.comps.engine.fuelRate * 72 : 0; // 加热功率，0~5
+        const activeCool = this.sys.comps.pump.pumpOn ? this.sys.comps.valve.currentPos * (this.temp - this.ambientT) * 1.2 : 0; // 风扇散热，0~(temp-ambientT)，与温差成正比
+        const passiveCool = this.sys.comps.pump.pumpOn ? (this.temp - this.ambientT) * 0.1 : (this.temp - this.ambientT) * 0.01; // 被动散热，温差越大散热越快
+        const coreInertia = 15; // 核心温度惯性，数值越大温度变化越慢
         const coolGen = activeCool + passiveCool; // 总散热
         const netHeat = heatGen - coolGen;
         this.temp += netHeat * dt / coreInertia; // 温度更新
         // 2. 模拟 PT100 测温延迟：用一个长度为 delaySteps 的数组做缓冲，每次更新时存入当前温度，取出 delaySteps 步前的温度作为传感器读数
+        this.temp = Math.min(this.temp,120);
         const delaySteps = 20; // 20 步 × 100ms = 2s 延迟
         // 存入队列
         this.tempBuffer.push(this.temp);
@@ -220,14 +291,15 @@ export class CoolingSystem extends BaseComponent {
         this.updatePT100Resistance();
 
         this._lcdTemp.text(this.sensorTemp.toFixed(1));
+        this.renerPipesFlow();
         // console.log(`Temp: ${this.temp.toFixed(1)}°C, Sensor: ${this.sensorTemp.toFixed(1)}°C);
         this._refreshCache(); // 强制刷新缓存，确保显示更新        
     }
 
     updatePT100Resistance() {
         if (this._pt100Fault === 'open') this.currentResistance = 1e9;
-        if (this._pt100Fault === 'short') this.currentResistance = 0;
-        this.currentResistance = 100 + 0.3851 * this.sensorTemp;
+        else if (this._pt100Fault === 'short') this.currentResistance = 0;
+        else this.currentResistance = 100 + 0.3851 * this.sensorTemp;
     }
 
 }

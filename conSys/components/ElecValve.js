@@ -27,8 +27,8 @@ export class ElecValve extends BaseComponent {
 
         // --- 端口定义 (严格对应弧形间隙位置) ---
         this.addPort(60, -10, 'r', 'pipe');    // 正上接口 (1段与2段间)
-        this.addPort(-10, 60, 'u', 'pipe');    // 正左接口 (2段与3段间)
-        this.addPort(60, 130, 'l', 'pipe');  // 正下接口 (3段与1段间)
+        this.addPort(-10, 60, 'u', 'pipe','in');    // 正左接口 (2段与3段间)
+        this.addPort(60, 130, 'l', 'pipe','in');  // 正下接口 (3段与1段间)
 
         this.addPort(175, 40, 'l', 'wire', 'p');  // 电机正极
         this.addPort(175, 80, 'r', 'wire');  // 电机负极
@@ -282,7 +282,7 @@ _startLoop() {
         const voltage = this.sys.getVoltageBetween(`${this.id}_wire_l`, `${this.id}_wire_r`);
         
         // 假设采样电阻 250Ω，1-5V 对应 4-20mA，对应 0-1 的开度
-        const current = Math.max(0.004, Math.min(0.02, voltage / 250));
+        const current = Math.max(0.004, Math.min(0.02, voltage / this.currentResistance));
         const targetPos = (1000 * current - 4) / 16;
 
         // 2. 滞后逻辑处理：计算当前值向目标值的逼近
@@ -314,7 +314,7 @@ _startLoop() {
             // 如果卡死，无论外部传入什么 inputPos，都不更新 currentPos
             // 液晶屏可以闪烁显示当前开度以示异常
             this.lcdText.fill(Math.floor(Date.now() / 500) % 2 ? '#ff0000' : '#7f8c8d');
-            this.sys.requestRedraw();
+            this._refreshCache();
             return;
         }
         // 1. 如果是远程模式且有外部输入，更新远程值

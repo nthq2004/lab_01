@@ -1,0 +1,529 @@
+/**
+ * CircuitSolver.js  V4.0 (模块化重构版)
+ *
+ * 模块结构：
+ *   CircuitTopology    — 并查集拓扑构建
+ *   MNAMatrix          — 矩阵底层操作（填充、求解、电压源/电流源注入）
+ *   DeviceStamps       — 各器件 MNA stamp
+ *   CurrentReadback    — 求解后物理量回传
+ *   CircuitUtils       — 等效电阻、电压辅助方法
+ *   InstrumentUpdater  — 仪表 UI 更新
+ */
+
+import { CircuitTopology }  from './CircuitTopology.js';
+import { MNAMatrix }        from './MNAMatrix.js';
+import { DeviceStamps }     from './DeviceStamps.js';
+import { CurrentReadback }  from './CurrentReadback.js';
+import { CircuitUtils }     from './CircuitUtils.js';
+import { InstrumentUpdater } from './InstrumentUpdater.js';
+
+export class CircuitSolver {
+    constructor(sys) {
+        this.sys = sys;
+        this.deltaTime = 0.1 / 1000; // 0.1ms 步长
+        this.currentTime = 0;
+        this.globalIterCount = 0;
+        this.rawDevices = Object.values(sys.comps);
+        this.portToCluster = new Map();
+        this.nodeVoltages = new Map();
+        this.clusters = [];
+        this.clusterCount = 0;
+        this.gndClusterIndices = new Set();
+        this.vPosMap = new Map();
+
+        this._equivResCache = new Map();
+        this._topologySig = null;
+
+        this._topology = new CircuitTopology();
+        this._instruments = new InstrumentUpdater(this);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 主循环
+    // ═══════════════════════════════════════════════════════════════════════
+    update() {
+        this.portToCluster.clear();
+        this.nodeVoltages.clear();
+        this.gndClusterIndices.clear();
+        this.vPosMap.clear();
+        this.clusters = [];
+
+        this.connections = this.sys.conns.filter(c => c.type === 'wire');
+        this.currentTime += this.deltaTime;
+        this.globalIterCount++;
+
+        this._buildTopology();
+        this._invalidateCacheIfNeeded();
+        this._solve();
+        this._instruments.update();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 1. 拓扑构建
+    // ═══════════════════════════════════════════════════════════════════════
+    _buildTopology() {
+        const result = this._topology.build(this.rawDevices, this.connections);
+        this.portToCluster = result.portToCluster;
+        this.clusterCount  = result.clusterCount;
+        this.clusters      = result.clusters;
+    }
+
+    _invalidateCacheIfNeeded() {
+        try {
+            const connKeys = this.connections.map(c => `${c.from}-${c.to}-${c.type}`).sort();
+            const resistSigs = [];
+            for (const d of this.rawDevices) {
+                if (d.type === 'resistor')       resistSigs.push(`${d.id}:${d.currentResistance || 0}`);
+                if (d.type === 'pressure_sensor') {
+                    resistSigs.push(`${d.id}_r1:${d.r1 || 0}`);
+                    resistSigs.push(`${d.id}_r2:${d.r2 || 0}`);
+                }
+            }
+            resistSigs.sort();
+            const sig = connKeys.join('|') + '|' + resistSigs.join('|');
+            if (sig !== this._topologySig) {
+                this._topologySig = sig;
+                this._equivResCache.clear();
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 2. 核心求解（节点电压法 + 非线性迭代）
+    // ═══════════════════════════════════════════════════════════════════════
+    _solve() {
+        const currentTime = this.globalIterCount * this.deltaTime;
+        const raw = this.rawDevices;
+
+        // 按类型分组（供本帧和仪表复用）
+        const gndDevs          = raw.filter(d => d.type === 'gnd');
+        const powerDevs        = raw.filter(d => d.type === 'source' || d.type === 'ac_source');
+        const power3Devs       = raw.filter(d => d.type === 'source_3p');
+        const tcDevs           = raw.filter(d => d.type === 'tc');
+        const pidDevs          = raw.filter(d => d.type === 'PID');
+        const bjtDevs          = raw.filter(d => d.type === 'bjt');
+        const opAmps           = raw.filter(d => d.type === 'amplifier');
+        const oscDevs          = raw.filter(d => d.type === 'oscilloscope');
+        const osc3Devs         = raw.filter(d => d.type === 'oscilloscope_tri');
+        const diodeDevs        = raw.filter(d => d.type === 'diode');
+        const resistorDevs     = raw.filter(d => d.type === 'resistor');
+        const pressDevs        = raw.filter(d => d.type === 'pressure_sensor');
+        const transmitterDevs  = raw.filter(d => d.type === 'transmitter_2wire');
+        const capacitorDevs    = raw.filter(d => d.type === 'capacitor');
+        const inductorDevs     = raw.filter(d => d.type === 'inductor');
+        const lvdtDevs         = raw.filter(d => d.type === 'pressure_transducer');
+        const sgDevs           = raw.filter(d => d.type === 'signal_generator');
+        const jfetDevs         = raw.filter(d => d.type === 'njfet');
+
+        this._cachedDevs = {
+            gndDevs, powerDevs, power3Devs, tcDevs, pidDevs, bjtDevs, opAmps,
+            oscDevs, osc3Devs, diodeDevs, resistorDevs, pressDevs, transmitterDevs,
+            capacitorDevs, inductorDevs, lvdtDevs, sgDevs, jfetDevs,
+        };
+
+        // ── 识别 GND / 已知电源节点 ──────────────────────────────────────
+        gndDevs.forEach(g => {
+            const cIdx = this.portToCluster.get(`${g.id}_wire_gnd`);
+            if (cIdx !== undefined) this.gndClusterIndices.add(cIdx);
+        });
+        powerDevs.forEach(p => {
+            const pId = `${p.id}_wire_p`, nId = `${p.id}_wire_n`;
+            if (this.portToCluster.has(nId)) this.gndClusterIndices.add(this.portToCluster.get(nId));
+            if (this.portToCluster.has(pId)) this.vPosMap.set(this.portToCluster.get(pId), p.getValue(currentTime));
+        });
+        power3Devs.forEach(dev => {
+            ['u', 'v', 'w'].forEach(pKey => {
+                const cPhase = this.portToCluster.get(`${dev.id}_wire_${pKey}`);
+                this.vPosMap.set(cPhase, dev.getPhaseVoltage(pKey, currentTime));
+            });
+        });
+
+        if (!this._opAmpsInitialized) {
+            opAmps.forEach(op => op.internalState = 'linear');
+            this._opAmpsInitialized = true;
+        }
+
+        // ── 建立节点映射 ─────────────────────────────────────────────────
+        const nodeMap = new Map();
+        let mSize = 0;
+        for (let i = 0; i < this.clusterCount; i++) {
+            if (!this.gndClusterIndices.has(i) && !this.vPosMap.has(i)) nodeMap.set(i, mSize++);
+        }
+        if (mSize === 0) { this._assignKnown(); return; }
+
+        // ── 统计额外电压源方程数 ─────────────────────────────────────────
+        let extraEqCount = 0;
+        pidDevs.forEach(pid => {
+            if (this.portToCluster.has(`${pid.id}_wire_pi1`) && this.portToCluster.has(`${pid.id}_wire_ni1`)) extraEqCount++;
+            if (this.portToCluster.has(`${pid.id}_wire_po1`) && this.portToCluster.has(`${pid.id}_wire_no1`)) extraEqCount++;
+            if (this.portToCluster.has(`${pid.id}_wire_po2`) && this.portToCluster.has(`${pid.id}_wire_no2`)) extraEqCount++;
+        });
+        let tcEqCount = 0;
+        tcDevs.forEach(tc => {
+            if (this.portToCluster.has(`${tc.id}_wire_r`) && this.portToCluster.has(`${tc.id}_wire_l`)) tcEqCount++;
+        });
+
+        const totalSize = mSize + extraEqCount + tcEqCount + opAmps.length + oscDevs.length + lvdtDevs.length;
+        let results = new Float64Array(totalSize);
+
+        const G = Array.from({ length: totalSize }, () => new Float64Array(totalSize));
+        const B = new Float64Array(totalSize);
+
+        // ── 构建传给 DeviceStamps 的上下文对象 ───────────────────────────
+        const ctx = {
+            portToCluster:        this.portToCluster,
+            nodeMap,
+            gndClusterIndices:    this.gndClusterIndices,
+            vPosMap:              this.vPosMap,
+            clusters:             this.clusters,
+            getVoltageFromResults: (res, cIdx) =>
+                CircuitUtils.getVoltageFromResults(res, nodeMap, this.gndClusterIndices, this.vPosMap, cIdx),
+            getVoltageAtPort: (pId) => this.getVoltageAtPort(pId),
+            getEquivalentResistance: (a, b, all) =>
+                this._getEquivalentResistance(a, b, all),
+            calcTransmitterCurrent: (dev) => this._calcTransmitterCurrent(dev),
+        };
+
+        // ── 迭代求解 ─────────────────────────────────────────────────────
+        const maxIterations = 200;
+        for (let iter = 0; iter < maxIterations; iter++) {
+            for (let gi = 0; gi < totalSize; gi++) G[gi].fill(0);
+            B.fill(0);
+
+            // 各器件 stamp
+            DeviceStamps.stampResistors(ctx, G, B, resistorDevs);
+            DeviceStamps.stampPressureSensors(ctx, G, B, pressDevs);
+            DeviceStamps.stampTransmitters(ctx, G, B, transmitterDevs);
+
+            let vSourceIdx = mSize;
+            vSourceIdx = DeviceStamps.stampPIDs(ctx, G, B, pidDevs, vSourceIdx);
+
+            const tcVIdx0 = mSize + extraEqCount;
+            DeviceStamps.stampThermocouples(ctx, G, B, tcDevs, tcVIdx0);
+
+            const opVIdx0 = mSize + extraEqCount + tcEqCount;
+            DeviceStamps.stampOpAmps(ctx, G, B, opAmps, opVIdx0);
+
+            DeviceStamps.stampDiodes(ctx, G, B, diodeDevs, results);
+            DeviceStamps.stampBJTs(ctx, G, B, bjtDevs, results);
+            DeviceStamps.stampJFETs(ctx, G, B, jfetDevs, results);
+            DeviceStamps.stampReactives(ctx, G, B, capacitorDevs, this.deltaTime);
+            DeviceStamps.stampReactives(ctx, G, B, inductorDevs, this.deltaTime);
+
+            const oscVIdx0 = mSize + extraEqCount + tcEqCount + opAmps.length;
+            DeviceStamps.stampOscilloscopes(ctx, G, B, oscDevs, oscVIdx0);
+
+            const ptVIdx0 = oscVIdx0 + oscDevs.length;
+            DeviceStamps.stampLVDTs(ctx, G, B, lvdtDevs, ptVIdx0);
+
+            DeviceStamps.stampSignalGenerators(ctx, G, B, sgDevs, currentTime);
+
+            // Gmin 防奇异
+            for (let i = 0; i < totalSize; i++) G[i][i] += 1e-12;
+
+            const nextResults = MNAMatrix.gauss(G, B);
+
+            // 收敛检查
+            let maxError = 0;
+            for (let i = 0; i < totalSize; i++)
+                maxError = Math.max(maxError, Math.abs(nextResults[i] - results[i]));
+
+            // 阻尼更新
+            nodeMap.forEach((mIdx, cIdx) => {
+                const oldV = this.nodeVoltages.get(cIdx) || 0;
+                const rawNewV = nextResults[mIdx];
+                if (this.vPosMap.has(cIdx)) { this.nodeVoltages.set(cIdx, rawNewV); return; }
+
+                const damping = 0.3;
+                let nextV = oldV + damping * (rawNewV - oldV);
+                const MAX_STEP = 0.5;
+                const delta = nextV - oldV;
+                if (Math.abs(delta) > MAX_STEP) nextV = oldV + MAX_STEP * Math.sign(delta);
+                this.nodeVoltages.set(cIdx, nextV);
+                nextResults[mIdx] = nextV;
+            });
+
+            // 运放状态切换
+            let stateChanged = false;
+            opAmps.forEach(op => {
+                const cP   = this.portToCluster.get(`${op.id}_wire_p`);
+                const cN   = this.portToCluster.get(`${op.id}_wire_n`);
+                const cOut = this.portToCluster.get(`${op.id}_wire_OUT`);
+                const vP      = ctx.getVoltageFromResults(results, cP);
+                const vN      = ctx.getVoltageFromResults(results, cN);
+                const vOutRaw = ctx.getVoltageFromResults(results, cOut);
+
+                let newState = op.internalState;
+                if (op.internalState === 'linear') {
+                    if      (vOutRaw > op.vPosLimit) newState = 'pos_sat';
+                    else if (vOutRaw < op.vNegLimit) newState = 'neg_sat';
+                } else {
+                    const vDiff = vP - vN;
+                    if      (op.internalState === 'pos_sat' && vDiff < 0) newState = 'linear';
+                    else if (op.internalState === 'neg_sat' && vDiff > 0) newState = 'linear';
+                    else if ((cP === undefined && cN === undefined) || vDiff === 0) newState = 'linear';
+                }
+                if (op.internalState !== newState) { op.internalState = newState; stateChanged = true; }
+            });
+
+            results = nextResults;
+            if (!stateChanged && maxError < 1e-6) break;
+        }
+
+        this._assignKnown();
+
+        // ── 物理量回传 ───────────────────────────────────────────────────
+        CurrentReadback.readResistors(this.nodeVoltages, this.portToCluster, resistorDevs);
+        CurrentReadback.readPressureSensors(this.nodeVoltages, this.portToCluster, pressDevs);
+        CurrentReadback.readTransmitters((pId) => this.getVoltageAtPort(pId), transmitterDevs);
+        CurrentReadback.readPIDs(results, this.nodeVoltages, this.portToCluster, this.clusters,
+            (a, b, all) => this._getEquivalentResistance(a, b, all), pidDevs);
+        CurrentReadback.readThermocouples(results, tcDevs);
+        CurrentReadback.readOpAmps(results, opAmps);
+        CurrentReadback.readDiodes(this.nodeVoltages, this.portToCluster, diodeDevs);
+        CurrentReadback.readBJTs(this.nodeVoltages, this.portToCluster, bjtDevs);
+        CurrentReadback.readJFETs(this.nodeVoltages, this.portToCluster, jfetDevs);
+        CurrentReadback.readAndUpdateReactives(this.nodeVoltages, this.portToCluster, capacitorDevs, this.deltaTime, false);
+        CurrentReadback.readAndUpdateReactives(this.nodeVoltages, this.portToCluster, inductorDevs,  this.deltaTime, true);
+        CurrentReadback.readOscilloscopes(results, oscDevs);
+        CurrentReadback.readLVDTs(results, lvdtDevs);
+        CurrentReadback.readSignalGenerators(this.nodeVoltages, this.portToCluster, sgDevs);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 公开辅助方法（供 InstrumentUpdater / DeviceStamps 回调使用）
+    // ═══════════════════════════════════════════════════════════════════════
+    getVoltageFromResults(results, nodeMap, clusterIdx) {
+        return CircuitUtils.getVoltageFromResults(results, nodeMap, this.gndClusterIndices, this.vPosMap, clusterIdx);
+    }
+
+    getVoltageAtPort(pId) {
+        return CircuitUtils.getVoltageAtPort(pId, this.portToCluster, this.nodeVoltages);
+    }
+
+    getPD(pA, pB) {
+        return CircuitUtils.getPD(pA, pB, this.portToCluster, this.nodeVoltages);
+    }
+
+    isPortConnected(pA, pB) {
+        return CircuitUtils.isPortConnected(pA, pB, this.portToCluster);
+    }
+
+    _getEquivalentResistance(startCluster, endCluster, allClusters) {
+        return CircuitUtils.getEquivalentResistance(
+            startCluster, endCluster, allClusters,
+            this.rawDevices, this.portToCluster, this._equivResCache
+        );
+    }
+
+    _getParallelResistanceBetweenClusters(clusterA, clusterB) {
+        return CircuitUtils.getParallelResistanceBetweenClusters(clusterA, clusterB, this.rawDevices);
+    }
+
+    _calcTransmitterCurrent(dev) {
+        return CircuitUtils.calcTransmitterCurrent(dev, this.portToCluster, this.nodeVoltages, this.rawDevices);
+    }
+
+    _assignKnown() {
+        this.gndClusterIndices.forEach(idx => this.nodeVoltages.set(idx, 0));
+        this.vPosMap.forEach((v, idx) => this.nodeVoltages.set(idx, v));
+    }
+
+    // ── 电流表辅助（保留在主类，因为需要访问 connections 等内部状态）────
+    _calculateBranchCurrent(dev) {
+        let portP = `${dev.id}_wire_p`;
+        let portN = `${dev.id}_wire_n`;
+        if (dev.type === 'multimeter') { portP = `${dev.id}_wire_ma`; portN = `${dev.id}_wire_com`; }
+
+        const pFuncDevs = this._getConnectedFunctionalDevices(portP, dev.id);
+        const nFuncDevs = this._getConnectedFunctionalDevices(portN, dev.id);
+
+        const pHasSource = pFuncDevs.some(d =>
+            d.device.type === 'source' || d.device.type === 'ac_source' ||
+            d.device.type === 'source_3p' || d.device.type === 'gnd');
+
+        if (pHasSource) {
+            let iInN = 0;
+            nFuncDevs.forEach(item => { iInN += this._getPhysicalFlowIntoPort(item.device, item.extPort); });
+            return -iInN;
+        } else {
+            let iInP = 0;
+            pFuncDevs.forEach(item => { iInP += this._getPhysicalFlowIntoPort(item.device, item.extPort); });
+            return iInP;
+        }
+    }
+
+    _getPhysicalFlowIntoPort(dev, extPort) {
+        if (dev.type === 'resistor' || dev.type === 'capacitor' || dev.type === 'inductor') {
+            const total = dev.physCurrent || 0;
+            return extPort.endsWith('_l') ? -total : total;
+        }
+        if (dev.type === 'pressure_sensor') {
+            if (extPort.endsWith('_r1l')) return -(dev.r1Current || 0);
+            if (extPort.endsWith('_r1r')) return  (dev.r1Current || 0);
+            if (extPort.endsWith('_r2l')) return -(dev.r2Current || 0);
+            if (extPort.endsWith('_r2r')) return  (dev.r2Current || 0);
+            return 0;
+        }
+        if (dev.type === 'relay' && dev.special === 'voltage') {
+            if (extPort.endsWith('_l')) return -(dev.physCurrent || 0);
+            if (extPort.endsWith('_r')) return  (dev.physCurrent || 0);
+            return 0;
+        }
+        if (dev.type === 'transmitter_2wire') {
+            const i = (dev._lastVDiff > 10) ? (dev._lastVDiff * (dev._lastG || 0)) : 0;
+            if (extPort.endsWith('_n')) return  i;
+            if (extPort.endsWith('_p')) return -i;
+            return 0;
+        }
+        if (dev.type === 'PID') {
+            if (extPort.endsWith('_po1') || extPort.endsWith('_no1')) {
+                if (dev.outModes.CH1 === '4-20mA') {
+                    const cPo1 = this.portToCluster.get(`${dev.id}_wire_po1`);
+                    const cNo1 = this.portToCluster.get(`${dev.id}_wire_no1`);
+                    const vDiff = (this.nodeVoltages.get(cPo1) || 0) - (this.nodeVoltages.get(cNo1) || 0);
+                    const req = (cPo1 !== undefined && cNo1 !== undefined)
+                        ? this._getEquivalentResistance(this.clusters[cPo1], this.clusters[cNo1], this.clusters) : Infinity;
+                    if (cPo1 === undefined || cNo1 === undefined || req > 100000) return 0;
+                    const i = (vDiff > 23.49) ? vDiff / req : dev.output1mA / 1000;
+                    return extPort.endsWith('_po1') ? i : -i;
+                } else if (dev.outModes.CH1 === 'PWM') {
+                    const i = dev.ch1Current || 0;
+                    return extPort.endsWith('_po1') ? -i : i;
+                }
+            }
+            if (extPort.endsWith('_po2') || extPort.endsWith('_no2')) {
+                if (dev.outModes.CH2 === '4-20mA') {
+                    const cPo2 = this.portToCluster.get(`${dev.id}_wire_po2`);
+                    const cNo2 = this.portToCluster.get(`${dev.id}_wire_no2`);
+                    const vDiff = (this.nodeVoltages.get(cPo2) || 0) - (this.nodeVoltages.get(cNo2) || 0);
+                    const req = (cPo2 !== undefined && cNo2 !== undefined)
+                        ? this._getEquivalentResistance(this.clusters[cPo2], this.clusters[cNo2], this.clusters) : Infinity;
+                    if (cPo2 === undefined || cNo2 === undefined || req > 100000) return 0;
+                    const i = (vDiff > 23.49) ? vDiff / req : dev.output2mA / 1000;
+                    return extPort.endsWith('_po2') ? i : -i;
+                } else if (dev.outModes.CH2 === 'PWM') {
+                    const i = dev.ch2Current || 0;
+                    return extPort.endsWith('_po2') ? -i : i;
+                }
+            }
+            if (extPort.endsWith('_pi1') || extPort.endsWith('_ni1')) {
+                const vNi = this.getVoltageAtPort(`${dev.id}_wire_ni1`);
+                const iLoop = vNi / 250;
+                return extPort.endsWith('_pi1') ? iLoop : -iLoop;
+            }
+            return -0.1;
+        }
+        if (dev.type === 'amplifier') {
+            if (extPort.endsWith('_p') || extPort.endsWith('_n')) return 0;
+            if (extPort.endsWith('_OUT')) return -dev.outCurrent || 0;
+        }
+        if (dev.type === 'diode') {
+            if (!this.portToCluster.get(`${dev.id}_wire_l`) || !this.portToCluster.get(`${dev.id}_wire_r`)) return 0;
+            const current = dev.physCurrent || 0;
+            return extPort.endsWith('_l') ? -current : current;
+        }
+        if (dev.type === 'bjt') {
+            if (!dev.physCurrents) return 0;
+            if (extPort.endsWith('_b')) return -dev.physCurrents.b;
+            if (extPort.endsWith('_c')) return -dev.physCurrents.c;
+            if (extPort.endsWith('_e')) return -dev.physCurrents.e;
+        }
+        if (dev.type === 'njfet') {
+            const i = dev.physCurrent || 0;
+            if (extPort.endsWith('_d')) return -i;
+            if (extPort.endsWith('_s')) return  i;
+            if (extPort.endsWith('_g')) return 0;
+            return 0;
+        }
+        if (dev.type === 'oscilloscope_tri') return 0;
+        if (dev.type === 'oscilloscope') {
+            const i = dev.physCurrent || 0;
+            if (extPort.endsWith('_l')) return  i;
+            if (extPort.endsWith('_r')) return -i;
+            return 0;
+        }
+        if (dev.type === 'pressure_transducer') {
+            const i = dev.physCurrent || 0;
+            if (extPort.endsWith('_outp')) return -i;
+            if (extPort.endsWith('_outn')) return  i;
+            if (extPort.endsWith('_p') || extPort.endsWith('_n')) {
+                const cP = this.portToCluster.get(`${dev.id}_wire_p`);
+                const cN = this.portToCluster.get(`${dev.id}_wire_n`);
+                const iIn = ((this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0)) * 1e-9;
+                return extPort.endsWith('_p') ? -iIn : iIn;
+            }
+            return 0;
+        }
+        if (dev.type === 'signal_generator') {
+            if (extPort.endsWith('_ch1p')) return  dev.ch1Current || 0;
+            if (extPort.endsWith('_ch1n')) return -(dev.ch1Current || 0);
+            if (extPort.endsWith('_ch2p')) return  dev.ch2Current || 0;
+            if (extPort.endsWith('_ch2n')) return -(dev.ch2Current || 0);
+            return 0;
+        }
+        return 0;
+    }
+
+    _getConnectedFunctionalDevices(meterPort, meterId) {
+        const found = [];
+        const visitedPorts = new Set();
+        const queue = [meterPort];
+        const processedDevs = new Set();
+        const devMap = new Map();
+        this.rawDevices.forEach(d => devMap.set(d.id, d));
+
+        while (queue.length > 0) {
+            const curr = queue.shift();
+            if (visitedPorts.has(curr)) continue;
+            visitedPorts.add(curr);
+
+            this.connections.forEach(conn => {
+                if (conn.from === curr) queue.push(conn.to);
+                else if (conn.to === curr) queue.push(conn.from);
+            });
+
+            const devId = curr.split('_wire_')[0];
+            const dev = devMap.get(devId);
+            if (!dev || dev.id === meterId) continue;
+
+            const isFunctional =
+                (dev.type === 'resistor' && dev.currentResistance > 0.1) ||
+                dev.type === 'source' || dev.type === 'ac_source' || dev.type === 'source_3p' ||
+                dev.type === 'gnd' || dev.type === 'transmitter_2wire' || dev.type === 'PID' ||
+                dev.type === 'diode' || dev.type === 'bjt' || dev.type === 'njfet' ||
+                dev.type === 'amplifier' || dev.type === 'signal_generator' ||
+                dev.type === 'pressure_transducer' || dev.type === 'pressure_sensor' ||
+                dev.type === 'oscilloscope' || dev.type === 'oscilloscope_tri' ||
+                dev.type === 'capacitor' || dev.type === 'inductor';
+
+            if (isFunctional) { found.push({ device: dev, extPort: curr }); continue; }
+
+            if (!processedDevs.has(dev.id)) {
+                processedDevs.add(dev.id);
+                const prefix = `${dev.id}_wire_`;
+                const currCluster = this.portToCluster.get(curr);
+                for (const [activePort] of this.portToCluster.entries()) {
+                    if (!activePort.startsWith(prefix) || activePort === curr) continue;
+                    const otherCluster = this.portToCluster.get(activePort);
+                    if (currCluster !== undefined && otherCluster === currCluster) queue.push(activePort);
+                }
+            }
+        }
+        return found;
+    }
+
+    // MNAMatrix 委托（供外部/测试访问）
+    _fillMatrix(G, B, nodeMap, c1, c2, g) {
+        MNAMatrix.fillMatrix(G, B, nodeMap, this.gndClusterIndices, this.vPosMap, c1, c2, g);
+    }
+    _addVoltageSourceToMNA(G, B, nodeMap, c1, c2, voltage, vIdx) {
+        MNAMatrix.addVoltageSource(G, B, nodeMap, this.gndClusterIndices, this.vPosMap, c1, c2, voltage, vIdx);
+    }
+    _addCurrentSourceToMNA(B, nodeMap, cPos, cNeg, current) {
+        MNAMatrix.addCurrentSource(B, nodeMap, cPos, cNeg, current);
+    }
+    _gauss(A, b) {
+        return MNAMatrix.gauss(A, b);
+    }
+}

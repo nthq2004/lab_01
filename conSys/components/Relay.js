@@ -6,7 +6,7 @@ export class Relay extends BaseComponent {
 
         // ===== 电气参数 =====
         this.coilResistance = config.coilResistance || 120; // Ω
-        this.currentResistance = 120; // Ω        用于万用表读取。
+        this.currentResistance = this.coilResistance; // Ω        用于万用表读取。
         this.pickupCurrent = config.pickupCurrent || 0.15;   // A
         this.releaseCurrent = config.releaseCurrent || 0.05; // A
 
@@ -14,8 +14,8 @@ export class Relay extends BaseComponent {
         this.isEnergized = false;
         this.W = 160;
         this.H = 100;
-        this.type = 'resistor'; // 用于万用表识别
-        this.special = 'relay'; // 用于区分继电器和普通电阻
+        this.type = 'relay'; // 用于万用表识别
+        this.special = 'voltage'; // 用于区分继电器和普通电阻
         this.cache = 'fixed';
 
         this._drawShell();

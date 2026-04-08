@@ -569,11 +569,11 @@ export class Multimeter extends BaseComponent {
 
             // --- 电流与电容档 ---
             case 'MA':
-                if (display < 0.1) {
+                if (Math.abs(display) < 0.1) {
                     unit = 'uA';
                     display = display * 1000;
                 }
-                else if (display > 100) {
+                else if (Math.abs(display) > 100) {
                     unit = 'A';
                     display = display / 1000;
                 } else {
@@ -582,7 +582,7 @@ export class Multimeter extends BaseComponent {
                 }
                 prefix = 'DC';
                 precision = 2;
-                if (display > 2000) isOverload = true;
+                if (display > 100) isOverload = true;
                 break;
             case 'C':
                 unit = 'uF';

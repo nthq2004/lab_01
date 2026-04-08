@@ -16,7 +16,7 @@ export class PIDController extends BaseComponent {
         this.direction = "REV";
         this.atActive = false;
         this.PV = 0;
-        this.SV = 60;
+        this.SV = 80;
         this.DIFF = 10;
         this.OUT = 50.0;
         this.P = 4;
@@ -28,7 +28,8 @@ export class PIDController extends BaseComponent {
         this.URV = 100;
         this.alarmStatus = "----";
         this.alarm = { HH: 95, H: 90, L: 30, LL: 10 };
-        this.outFault = false;
+        this.out1Fault = false;
+        this.out2Fault = false;        
 
         // --- 内部 PID 运算状态 ---
         this.lastError = 0;    // 上一次的误差
@@ -363,7 +364,14 @@ export class PIDController extends BaseComponent {
             }
 
         }
-
+        if(this.out1Fault){
+            this.heatPWM =0;
+            this.output1mA =0;
+        }
+        if(this.out2Fault){
+            this.coolPWM =0;
+            this.output2mA =0;
+        }
         // 2. 计算瞬时开关状态 (布尔值)
         // 如果当前相位在 (周期 * 占空比) 之内，则为开启
         this.heatInstantOn = this.pwmPhase < (this.PERIOD * this.heatPWM);

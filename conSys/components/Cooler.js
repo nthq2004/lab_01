@@ -11,9 +11,9 @@ export class Cooler extends BaseComponent {
         this.h = 120;
 
         // 1. 大外壳（主体矩形 + 两端半球端盖）
-        const body = new Konva.Rect({ x: 30, y: 10, width: this.w - 60, height: this.h - 20, fill: '#f6f6f4', stroke: '#91aecb', strokeWidth: 3, cornerRadius: 8, opacity: 0.05 });
+        const body = new Konva.Rect({ x: 30, y: 10, width: this.w - 60, height: this.h - 20, fill: '#f6f6f4', stroke: '#91aecb', strokeWidth: 3, cornerRadius: 8, opacity: 0.4 });
         const leftCap = new Konva.Ellipse({ x: 30, y: this.h / 2, radius: { x: 30, y: this.h / 2 - 6 }, fill: '#7a7e82' });
-        const rightCap = new Konva.Ellipse({ x: this.w - 30, y: this.h / 2, radius: { x: 28, y: this.h / 2 - 6 }, fill: '#8a8d8f', opacity: 0.1 });
+        const rightCap = new Konva.Ellipse({ x: this.w - 30, y: this.h / 2, radius: { x: 28, y: this.h / 2 - 6 }, fill: '#8a8d8f', opacity: 0.7 });
         const shellFace = new Konva.Rect({ x: 34, y: 14, width: this.w - 90, height: this.h - 28, fill: '#ffffff', stroke: null, cornerRadius: 6 });
 
         // 2. 侧面进出法兰与箭头
@@ -83,7 +83,7 @@ export class Cooler extends BaseComponent {
     update() {
         this.fluence = this.sys.comps.valve.currentPos; // 获取当前流量系数
         // 淡水流动动画 (根据系统状态移动)
-        const isFlowing = this.fluence > 0.02;
+        const isFlowing = this.sys.comps.pump.pumpOn && this.fluence > 0.02;
         if (isFlowing) {
             this.tubeFlows.find('.fw_flow').forEach(line => {
                 line.visible(true);
