@@ -6,10 +6,10 @@ export class VariResistor extends BaseComponent {
         this.width = 80;
         this.height = 25;
         // --- 物理属性 ---
-        this.maxResistance = config.value || 1000; // 默认 1kΩ
+        this.maxResistance = config.value || 385.1; // 默认 1kΩ
         this.type = 'resistor';
         this.cache = 'fixed'; // 用于静态缓存的特殊标识
-        this.currentResistance = config.cvalue||this.maxResistance/2;
+        this.currentResistance = config.cvalue||100;
         this.stepPercent = 0.01; // 10% 步进
         this.config = { 'id': this.id, 'maxResistance': this.maxResistance, 'currentResistance': this.currentResistance, 'stepPercent': this.stepPercent };
 

@@ -488,7 +488,7 @@ export class ControlSystem {
                     this.comps.monitor.btnAckFunc();
                     await new Promise(r => setTimeout(r, 3000));
                 },
-                check: async function () {
+                check: async () => {
                     // 1. 先等待 6s 确保仿真引擎的温度升高并触发了报警逻辑
                     await new Promise(r => setTimeout(r, 3000));
                     const monitor = this.comps.monitor;
@@ -521,6 +521,8 @@ export class ControlSystem {
                         { from: 'pt_wire_l', to: 'ttrans_wire_l', type: 'wire' },
                         { from: 'pt_wire_r', to: 'ttrans_wire_m', type: 'wire' },
                         { from: 'pt_wire_r', to: 'ttrans_wire_r', type: 'wire' },
+                        { from: 'ttrans_wire_p', to: 'ampmeter_wire_n', type: 'wire' },
+                        { from: 'ttrans_wire_n', to: 'pid_wire_ni1', type: 'wire' }
                     ];
                     await new Promise(r => setTimeout(r, 2000));
                     for (const conn of transLines) {
@@ -536,6 +538,8 @@ export class ControlSystem {
                         { from: 'pt_wire_l', to: 'ttrans_wire_l', type: 'wire' },
                         { from: 'pt_wire_r', to: 'ttrans_wire_m', type: 'wire' },
                         { from: 'pt_wire_r', to: 'ttrans_wire_r', type: 'wire' },
+                        { from: 'ttrans_wire_p', to: 'ampmeter_wire_n', type: 'wire' },
+                        { from: 'ttrans_wire_n', to: 'pid_wire_ni1', type: 'wire' }
                     ];
                     return transLines.every(target => {
                         return !this.conns.some(conn => {
@@ -607,6 +611,8 @@ export class ControlSystem {
                         { from: 'pt_wire_l', to: 'ttrans_wire_l', type: 'wire' },
                         { from: 'pt_wire_r', to: 'ttrans_wire_m', type: 'wire' },
                         { from: 'pt_wire_r', to: 'ttrans_wire_r', type: 'wire' },
+                        { from: 'ttrans_wire_p', to: 'ampmeter_wire_n', type: 'wire' },
+                        { from: 'ttrans_wire_n', to: 'pid_wire_ni1', type: 'wire' }
                     ];
                     for (const conn of transLines) {
                         this.addConn(conn);   // 重新接入当前线
@@ -623,6 +629,8 @@ export class ControlSystem {
                         { from: 'pt_wire_l', to: 'ttrans_wire_l', type: 'wire' },
                         { from: 'pt_wire_r', to: 'ttrans_wire_m', type: 'wire' },
                         { from: 'pt_wire_r', to: 'ttrans_wire_r', type: 'wire' },
+                        { from: 'ttrans_wire_p', to: 'ampmeter_wire_n', type: 'wire' },
+                        { from: 'ttrans_wire_n', to: 'pid_wire_ni1', type: 'wire' }
                     ];
 
                     // 检查是否每一条预期的线都存在于当前的 conns 数组中
@@ -693,7 +701,7 @@ export class ControlSystem {
                     this.comps.monitor.btnAckFunc();
                     await new Promise(r => setTimeout(r, 3000));
                 },
-                check: async function () {
+                check: async () => {
                     // 1. 先等待 6s 确保仿真引擎的温度升高并触发了报警逻辑
                     await new Promise(r => setTimeout(r, 3000));
                     const monitor = this.comps.monitor;
@@ -748,7 +756,7 @@ export class ControlSystem {
                     ];
                     return transLines.every(target => {
                         return !this.conns.some(conn => {
-                            return this.sys._connEqual(conn, target);
+                            return this._connEqual(conn, target);
                         });
 
                     });
@@ -761,8 +769,8 @@ export class ControlSystem {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.multimeter.mode = "RES200k";
                     this.comps.multimeter._updateAngleByMode();
-                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_l', type: 'wire' };
-                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_r', type: 'wire' };
+                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_r', type: 'wire' };
+                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_l', type: 'wire' };
                     await this.addConnectionAnimated(conn1);
                     await this.addConnectionAnimated(conn2);
                     await new Promise(r => setTimeout(r, 5000));
@@ -770,10 +778,10 @@ export class ControlSystem {
                 },
                 check: () => {
                     const c1 = this.comps.multimeter.mode === "RES200k";
-                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_l', type: 'wire' };
-                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_r', type: 'wire' };
-                    const c2 = this.conns.some(c => this.sys._connEqual(c, conn1));
-                    const c3 = this.conns.some(c => this.sys._connEqual(c, conn2));
+                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_r', type: 'wire' };
+                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_l', type: 'wire' };
+                    const c2 = this.conns.some(c => this._connEqual(c, conn1));
+                    const c3 = this.conns.some(c => this._connEqual(c, conn2));
                     const c4 = this.comps.multimeter.value > 1000 || this.comps.multimeter.value === Infinity;
                     return c1 && c2 && c3 && c4;
                 }
@@ -790,10 +798,10 @@ export class ControlSystem {
                 },
                 check: () => {
                     const c1 = this.comps.multimeter.mode === "RES200";
-                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_l', type: 'wire' };
-                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_r', type: 'wire' };
-                    const c2 = this.conns.some(c => this.sys._connEqual(c, conn1));
-                    const c3 = this.conns.some(c => this.sys._connEqual(c, conn2));
+                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_r', type: 'wire' };
+                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_l', type: 'wire' };
+                    const c2 = this.conns.some(c => this._connEqual(c, conn1));
+                    const c3 = this.conns.some(c => this._connEqual(c, conn2));
                     const c4 = this.comps.multimeter.value < 200;
                     return c1 && c2 && c3 && c4;
                 }
@@ -802,8 +810,8 @@ export class ControlSystem {
                 msg: "8：接入新的PT100，重新接入PID输入回路。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
-                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_l', type: 'wire' };
-                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_r', type: 'wire' };
+                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_r', type: 'wire' };
+                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_l', type: 'wire' };
                     this.removeConn(conn1);
                     await new Promise(r => setTimeout(r, 1000)); // 等待2秒
                     this.removeConn(conn2);
@@ -841,7 +849,7 @@ export class ControlSystem {
                     // 检查是否每一条预期的线都存在于当前的 conns 数组中
                     return requiredLines.every(target => {
                         return this.conns.some(conn => {
-                            return this.sys._connEqual(conn, target);
+                            return this._connEqual(conn, target);
                         });
                     });
                 }
@@ -905,7 +913,7 @@ export class ControlSystem {
                     this.comps.monitor.btnAckFunc();
                     await new Promise(r => setTimeout(r, 3000));
                 },
-                check: async function () {
+                check: async () => {
                     // 1. 先等待 6s 确保仿真引擎的温度升高并触发了报警逻辑
                     await new Promise(r => setTimeout(r, 3000));
 
@@ -950,8 +958,8 @@ export class ControlSystem {
                     const c1 = this.comps.multimeter.mode === "DCV200";
                     const conn1 = { from: 'multimeter_wire_com', to: 'ttrans_wire_n', type: 'wire' };
                     const conn2 = { from: 'multimeter_wire_v', to: 'ttrans_wire_p', type: 'wire' };
-                    const c2 = this.conns.some(c => this.sys._connEqual(c, conn1));
-                    const c3 = this.conns.some(c => this.sys._connEqual(c, conn2));
+                    const c2 = this.conns.some(c => this._connEqual(c, conn1));
+                    const c3 = this.conns.some(c => this._connEqual(c, conn2));
                     const c4 = this.comps.multimeter.value > 23 || this.comps.multimeter.value === 24;
                     return c1 && c2 && c3 && c4;
                 }
@@ -1060,6 +1068,7 @@ export class ControlSystem {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.ttrans.zeroAdj = 0.4;
                     this.comps.ttrans.knobs['zero'].rotation(180);
+                    this.comps.ttrans._refreshCache();
                     await new Promise(r => setTimeout(r, 3000));
                 },
                 check: () => this.comps.ttrans.zeroAdj > 0.1
@@ -1095,7 +1104,7 @@ export class ControlSystem {
                     };
                     this.comps.pt.group.position({ x: 270, y: 480 });
                     await new Promise(r => setTimeout(r, 2000)); // 等待2秒
-                    this.comps.stdres.group.position({ x: 280, y: 380 });
+                    this.comps.stdres.group.position({ x: 280, y: 400 });
                     await new Promise(r => setTimeout(r, 2000)); // 等待2秒
                     const transLinesNew = [
                         { from: 'stdres_wire_l', to: 'ttrans_wire_l', type: 'wire' },
@@ -1161,7 +1170,8 @@ export class ControlSystem {
                     this.comps.stdres.update();
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.ttrans.zeroAdj = 0;
-                    this.comps.ttrans.knobs['zero'].rotation(-180);
+                    this.comps.ttrans.knobs['zero'].rotation(0);
+                    this.comps.ttrans._refreshCache();
                     await new Promise(resolve => setTimeout(resolve, 5000));
 
                 },
@@ -1199,7 +1209,7 @@ export class ControlSystem {
                         this.removeConn(conn);   // 删除当前线
                         await new Promise(r => setTimeout(r, 2000)); // 等待2秒
                     };
-                    this.comps.stdres.group.position({ x: 1250, y: 310 });
+                    this.comps.stdres.group.position({ x: 1200, y: 310 });
                     await new Promise(r => setTimeout(r, 2000)); // 等待2秒
                     this.comps.pt.group.position({ x: 270, y: 400 });
                     await new Promise(r => setTimeout(r, 2000)); // 等待2秒
@@ -1289,8 +1299,9 @@ export class ControlSystem {
                 msg: "2：触发温度变送器量程偏差故障。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
-                    this.comps.ttrans.spanAdj = 1.25;
-                    this.comps.ttrans.knobs['span'].rotation(180);
+                    this.comps.ttrans.spanAdj = 1.125;
+                    this.comps.ttrans.knobs['span'].rotation(90);
+                    this.comps.ttrans._refreshCache();
                     await new Promise(r => setTimeout(r, 3000));
                 },
                 check: () => this.comps.ttrans.spanAdj > 1.1
@@ -1394,7 +1405,7 @@ export class ControlSystem {
                     this.comps.stdres.update();
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.ttrans.spanAdj = 1;
-                    this.comps.ttrans.knobs['span'].rotation(-180);
+                    this.comps.ttrans.knobs['span'].rotation(0);
                     await new Promise(r => setTimeout(r, 5000));
                     this.comps.monitor.btnMuteFunc();
                     this.comps.monitor.btnAckFunc();
@@ -1524,7 +1535,7 @@ export class ControlSystem {
                 msg: "2：触发PID参数失调故障,温度波动，阀门开度几乎不变。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
-                    this.comps.pid.P = 0.1;
+                    this.comps.pid.P = 0.03;
                     this.comps.pid.I = 0;
                     this.comps.pid.D = 0;
                     await new Promise(resolve => setTimeout(resolve, 5000));
@@ -1566,7 +1577,7 @@ export class ControlSystem {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.pid.P = 4;
                     this.comps.pid.I = 30;
-                    this.comps.pid.D = 3;
+                    this.comps.pid.D = 0;
                     await new Promise(resolve => setTimeout(resolve, 5000));
                     this.comps.monitor.btnMuteFunc();
                     this.comps.monitor.btnAckFunc();
@@ -1648,7 +1659,7 @@ export class ControlSystem {
                     this.comps.monitor.btnAckFunc();
                     await new Promise(r => setTimeout(r, 3000));
                 },
-                check: async function () {
+                check: async () => {
                     await new Promise(r => setTimeout(r, 3000));
                     const monitor = this.comps.monitor;
                     const alarms = monitor.activeAlarms;
@@ -1665,6 +1676,7 @@ export class ControlSystem {
                     this.comps.valve.updateModeText("MANUAL");
                     await new Promise(r => setTimeout(r, 2000));
                     this.comps.valve.manualPos = 0.65;
+                    this.comps.valve.update();
                     await new Promise(r => setTimeout(r, 3000));
                 },
                 check: () => {
@@ -1685,7 +1697,7 @@ export class ControlSystem {
                         this.removeConn(conn);   // 删除当前线
                         await new Promise(r => setTimeout(r, 2000)); // 等待2秒
                     }
-                    this.comps.ampmeter.group.position({ x: 720, y: 300 });
+                    this.comps.ampmeter2.group.position({ x: 720, y: 300 });
                     const conn1 = { from: 'pid_wire_po1', to: 'ampmeter2_wire_p', type: 'wire' };
                     const conn2 = { from: 'ampmeter2_wire_n', to: 'valve_wire_l', type: 'wire' };
                     await this.addConnectionAnimated(conn1);
@@ -1711,7 +1723,7 @@ export class ControlSystem {
                         });
 
                     });
-                    const c2 = this.comps.ampmeter.value <0.1;
+                    const c2 = this.comps.ampmeter2.value <0.1;
                     const c3 = this.comps.pid.mode === "MAN";
                     return c1 && ampMeterIn && c2 && c3;
                 }
@@ -1730,7 +1742,7 @@ export class ControlSystem {
                     const conn2 = { from: 'multimeter_wire_v', to: 'pid_wire_po1', type: 'wire' };
                     await this.addConnectionAnimated(conn1);
                     await this.addConnectionAnimated(conn2);
-                    await new Promise(resolve => setTimeout(resolve, 5000));
+                    await new Promise(r => setTimeout(r, 5000));
                     this.comps.monitor.btnMuteFunc();
                     this.comps.monitor.btnAckFunc();
 
@@ -1807,7 +1819,7 @@ export class ControlSystem {
                     await new Promise(r => setTimeout(r, 2000));
                     this.comps.monitor.btnMuteFunc();
                     this.comps.monitor.btnAckFunc();
-                    await new Promise(resolve => setTimeout(resolve, 30000));
+                    await new Promise(resolve => setTimeout(resolve, 20000));
                 },
                 check: async () => {
                     // 1. 等待 2 秒让物理引擎计算出趋势
@@ -2021,7 +2033,7 @@ export class ControlSystem {
                     this.comps.monitor.btnAckFunc();
                     await new Promise(r => setTimeout(r, 3000));
                 },
-                check: async function () {
+                check: async () => {
                     await new Promise(r => setTimeout(r, 3000));
                     const monitor = this.comps.monitor;
                     const alarms = monitor.activeAlarms;
@@ -2058,7 +2070,7 @@ export class ControlSystem {
                         this.removeConn(conn);   // 删除当前线
                         await new Promise(r => setTimeout(r, 2000)); // 等待2秒
                     }
-                    this.comps.ampmeter.group.position({ x: 720, y: 300 });
+                    this.comps.ampmeter2.group.position({ x: 620, y: 320 });
                     const conn1 = { from: 'pid_wire_po1', to: 'ampmeter2_wire_p', type: 'wire' };
                     const conn2 = { from: 'ampmeter2_wire_n', to: 'valve_wire_l', type: 'wire' };
                     await this.addConnectionAnimated(conn1);
@@ -2075,8 +2087,8 @@ export class ControlSystem {
                     const connP =  { from: 'pid_wire_po1', to: 'valve_wire_l', type: 'wire' };
                     const c1 = !this.conns.some(c => this._connEqual(c,connP));
                     const transLines = [
-                        { from: 'pid_wire_po1', to: 'ampmeter_wire_p', type: 'wire' },
-                        { from: 'ampmeter_wire_n', to: 'valve_wire_l', type: 'wire' }
+                        { from: 'pid_wire_po1', to: 'ampmeter2_wire_p', type: 'wire' },
+                        { from: 'ampmeter2_wire_n', to: 'valve_wire_l', type: 'wire' }
                     ];
                     const ampMeterIn = transLines.every(target => {
                         return this.conns.some(conn => {
@@ -2084,7 +2096,7 @@ export class ControlSystem {
                         });
 
                     });
-                    const c2 = this.comps.ampmeter.value <0.1;
+                    const c2 = this.comps.ampmeter2.value <0.1;
                     const c3 = this.comps.pid.mode === "MAN";
                     return c1 && ampMeterIn && c2 && c3;
                 }
@@ -2134,8 +2146,8 @@ export class ControlSystem {
                 },
                 check: () => {
                     const c1 = this.comps.dcpower.isOn === true;
-                    const c2 = this.comps.pid.outFault === false;
-                    const c3 = this.comps.multimeter.mode === "DCV20" || this.comps.multimeter.mode === "DCV200";
+                    const c2 = this.comps.ampmeter2.value >4 ;
+                    const c3 = this.comps.multimeter.mode === "DCV20" || this.comps.multimeter.mode === "RES2k";
                     return c1 && c2 && c3;
                 }
             },
@@ -2219,11 +2231,15 @@ export class ControlSystem {
                 name: "4. 温度变送器零点漂移",
                 trigger: () => {
                     // 1: 设置开路故障
-                    this.comps['ttrans'].zeroAdj = 0.5;
+                    this.comps['ttrans'].zeroAdj = 0.4;
+                    this.comps['ttrans'].knobs['zero'].rotation(180);
+                    this.comps.ttrans._refreshCache();
                 },
                 check: () => { return Math.abs(this.comps['ttrans'].zeroAdj - 0.5) < 0.1 },
                 repair: () => {
                     this.comps['ttrans'].zeroAdj = 0;
+                    this.comps['ttrans'].knobs['zero'].rotation(0);
+                    this.comps.ttrans._refreshCache();                    
                 }
             },
             5: {
@@ -2231,18 +2247,22 @@ export class ControlSystem {
                 name: "5. 温度变送器量程偏差",
                 trigger: () => {
                     // 1: 设置开路故障
-                    this.comps['ttrans'].spanAdj = 1.1;
+                    this.comps['ttrans'].spanAdj = 1.125;
+                    this.comps['ttrans'].knobs['span'].rotation(90);
+                    this.comps.ttrans._refreshCache();                         
                 },
-                check: () => { return Math.abs(this.comps['ttrans'].spanAdj - 1.1) < 0.1 },
+                check: () => { return Math.abs(this.comps['ttrans'].spanAdj - 1.125) < 0.05 },
                 repair: () => {
                     this.comps['ttrans'].spanAdj = 1;
+                    this.comps['ttrans'].knobs['span'].rotation(0);
+                    this.comps.ttrans._refreshCache();                         
                 }
             },
             6: {
                 id: 6,
                 name: "6. PID调节器参数失调",
                 trigger: () => {
-                    this.comps['pid'].P = 0.1;
+                    this.comps['pid'].P = 0.05;
                     this.comps['pid'].I = 0;
                     this.comps['pid'].D = 0;
                 },
