@@ -12,6 +12,7 @@ export class DCPower extends BaseComponent {
         this.isBreak = false; // 模拟开路状态
         this.voltage = config.voltage||24; // 默认24V
         this.maxVoltage = 24;
+        this.rOn = 0.1;
 
         this._init();
                 // 端口

@@ -113,11 +113,12 @@ export class CircuitSolver {
         const lvdtDevs = raw.filter(d => d.type === 'pressure_transducer');
         const sgDevs = raw.filter(d => d.type === 'signal_generator');
         const jfetDevs = raw.filter(d => d.type === 'njfet');
+        const relayDevs = raw.filter(d => d.type === 'relay' && d.special === 'voltage');
 
         this._cachedDevs = {
             gndDevs, powerDevs, power3Devs, tcDevs, pidDevs, bjtDevs, opAmps,
             oscDevs, osc3Devs, diodeDevs, resistorDevs, pressDevs, transmitterDevs,
-            capacitorDevs, inductorDevs, lvdtDevs, sgDevs, jfetDevs,
+            capacitorDevs, inductorDevs, lvdtDevs, sgDevs, jfetDevs, relayDevs
         };
 
         // ── 识别 GND / 已知电源节点 ──────────────────────────────────────
@@ -146,12 +147,8 @@ export class CircuitSolver {
             if (this.portToCluster.has(`${pid.id}_wire_po1`) && this.portToCluster.has(`${pid.id}_wire_no1`)) pidEqCount++;
             if (this.portToCluster.has(`${pid.id}_wire_po2`) && this.portToCluster.has(`${pid.id}_wire_no2`)) pidEqCount++;
         });
-        let tcEqCount = 0;
-        tcDevs.forEach(tc => {
-            if (this.portToCluster.has(`${tc.id}_wire_r`) && this.portToCluster.has(`${tc.id}_wire_l`)) tcEqCount++;
-        });
 
-        const totalSize = mSize + pidEqCount + tcEqCount + opAmps.length + oscDevs.length + lvdtDevs.length;
+        const totalSize = mSize + pidEqCount + opAmps.length + oscDevs.length + lvdtDevs.length;
         let results = new Float64Array(totalSize);
 
         const G = Array.from({ length: totalSize }, () => new Float64Array(totalSize));
@@ -178,43 +175,48 @@ export class CircuitSolver {
             for (let gi = 0; gi < totalSize; gi++) G[gi].fill(0);
             B.fill(0);
 
-            // 各器件 stamp
+            // ── 各器件 stamp 注入（序号对应 DeviceStamps 中的 stamp 方法） ────
+            // ─ 1. 电阻 ───────────────────────────────────────────────────
             DeviceStamps.stampResistors(ctx, G, B, resistorDevs);
+            // ─ 2. 压力传感器 ──────────────────────────────────────────────
             DeviceStamps.stampPressureSensors(ctx, G, B, pressDevs);
+            // ─ 3. 变送器 ───────────────────────────────────────────────────
             DeviceStamps.stampTransmitters(ctx, G, B, transmitterDevs);
-
-            // 电源采用诺顿等效注入（不需要传 vIdx）
+            // ─ 4. 电源 & 5. 三相电源（诺顿等效注入，不增加方程）──────────
             DeviceStamps.stampPowerSources(ctx, G, B, powerDevs, 0, currentTime);
             DeviceStamps.stampPower3Sources(ctx, G, B, power3Devs, 0, currentTime);
 
+            // ─ 6. PID 控制器 ──────────────────────────────────────────────
             let pidVIdx = mSize;
             DeviceStamps.stampPIDs(ctx, G, B, pidDevs, pidVIdx);
-
-            const tcVIdx = mSize + pidEqCount;
-            DeviceStamps.stampThermocouples(ctx, G, B, tcDevs, tcVIdx);
-
-            const opVIdx = mSize + pidEqCount + tcEqCount;
+            // ─ 7. 热电偶（诺顿等效注入，不增加方程）──────────────────────
+            DeviceStamps.stampThermocouples(ctx, G, B, tcDevs);
+            // ─ 8. 运放 ─────────────────────────────────────────────────────
+            const opVIdx = mSize + pidEqCount;
             DeviceStamps.stampOpAmps(ctx, G, B, opAmps, opVIdx);
-
+            // ─ 9. 二极管 ───────────────────────────────────────────────────
             DeviceStamps.stampDiodes(ctx, G, B, diodeDevs, results);
+            // ─ 10. BJT ────────────────────────────────────────────────────
             DeviceStamps.stampBJTs(ctx, G, B, bjtDevs, results);
+            // ─ 11. JFET ───────────────────────────────────────────────────
             DeviceStamps.stampJFETs(ctx, G, B, jfetDevs, results);
+            // ─ 12.1 & 12.2 电容 & 电感 ────────────────────────────────────
             DeviceStamps.stampReactives(ctx, G, B, capacitorDevs, this.deltaTime);
             DeviceStamps.stampReactives(ctx, G, B, inductorDevs, this.deltaTime);
-
-            const oscVIdx = mSize + pidEqCount + tcEqCount + opAmps.length;
+            // ─ 13. 示波器 ──────────────────────────────────────────────────
+            const oscVIdx = mSize + pidEqCount + opAmps.length;
             DeviceStamps.stampOscilloscopes(ctx, G, B, oscDevs, oscVIdx);
-
+            // ─ 14. LVDT / 压力变送器 ───────────────────────────────────────
             const ptVIdx = oscVIdx + oscDevs.length;
             DeviceStamps.stampLVDTs(ctx, G, B, lvdtDevs, ptVIdx);
-
+            // ─ 15. 信号发生器 ──────────────────────────────────────────────
             DeviceStamps.stampSignalGenerators(ctx, G, B, sgDevs, currentTime);
+            // ─ 16 电压型继电器（线圈电阻） ────────────────────────────────
+            DeviceStamps.stampRelays(ctx, G, B, relayDevs);
 
             // Gmin 防奇异
             for (let i = 0; i < totalSize; i++) G[i][i] += 1e-12;
-
             const nextResults = MNAMatrix.gauss(G, B);
-
             // 收敛检查
             let maxError = 0;
             for (let i = 0; i < totalSize; i++)
@@ -269,14 +271,15 @@ export class CircuitSolver {
     }
 
     // ── 统一计算所有设备的电流（取代原 CurrentReadback 阶段）────────────
+    // 序号对应 DeviceStamps 中各 stamp 方法的顺序
     _updateDeviceCurrents(devices, results) {
         const {
             resistorDevs, pressDevs, transmitterDevs, pidDevs, tcDevs, opAmps,
             diodeDevs, bjtDevs, jfetDevs, capacitorDevs, inductorDevs,
-            oscDevs, lvdtDevs, sgDevs, powerDevs, power3Devs
+            oscDevs, lvdtDevs, sgDevs, powerDevs, power3Devs, relayDevs
         } = devices;
 
-        // 1. 电阻电流
+        // ─ 1. 电阻电流（对应 stampResistors）
         resistorDevs.forEach(dev => {
             if (dev.currentResistance < 0.1) return;
             const cL = this.portToCluster.get(`${dev.id}_wire_l`);
@@ -286,7 +289,7 @@ export class CircuitSolver {
             dev.physCurrent = (vL - vR) / dev.currentResistance;
         });
 
-        // 2. 压力传感器电流
+        // ─ 2. 压力传感器电流（对应 stampPressureSensors）
         pressDevs.forEach(dev => {
             const c1l = this.portToCluster.get(`${dev.id}_wire_r1l`);
             const c1r = this.portToCluster.get(`${dev.id}_wire_r1r`);
@@ -296,14 +299,39 @@ export class CircuitSolver {
             dev.r2Current = ((this.nodeVoltages.get(c2l) || 0) - (this.nodeVoltages.get(c2r) || 0)) / Math.max(0.001, dev.r2);
         });
 
-        // 3. 变送器缓存压差
+        // ─ 3. 变送器缓存压差（对应 stampTransmitters）
         transmitterDevs.forEach(dev => {
             const pV = this.getVoltageAtPort(`${dev.id}_wire_p`);
             const nV = this.getVoltageAtPort(`${dev.id}_wire_n`);
             dev._lastVDiff = pV - nV;
         });
 
-        // 4. PID 电流
+        // ─ 4. 电源电流（对应 stampPowerSources）
+        powerDevs.forEach(dev => {
+            const cP = this.portToCluster.get(`${dev.id}_wire_p`);
+            const cN = this.portToCluster.get(`${dev.id}_wire_n`);
+            if (cP === undefined || cN === undefined) return;
+            const vDiff = (this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0);
+            const rOn = dev.rOn || 0.1;
+            const voltage = dev.getValue(this.currentTime);
+            dev.physCurrent = (voltage - vDiff) / rOn;
+        });
+
+        // ─ 5. 三相电源电流（对应 stampPower3Sources）
+        power3Devs.forEach(dev => {
+            dev.phaseCurrents = { u: 0, v: 0, w: 0 };
+            ['u', 'v', 'w'].forEach(phase => {
+                const cP = this.portToCluster.get(`${dev.id}_wire_${phase}`);
+                const cN = this.portToCluster.get(`${dev.id}_wire_n`);
+                if (cP === undefined || cN === undefined) return;
+                const vDiff = (this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0);
+                const rOn = dev.rOn || 0.1;
+                const voltage = dev.getPhaseVoltage(phase, this.currentTime);
+                dev.phaseCurrents[phase] = (voltage - vDiff) / rOn;
+            });
+        });
+
+        // ─ 6. PID 电流（对应 stampPIDs）
         pidDevs.forEach(pid => {
             if (!pid.powerOn) return;
             if (pid._ch1CurrentInfo) {
@@ -330,17 +358,24 @@ export class CircuitSolver {
             }
         });
 
-        // 5. 热电偶电流
+        // ─ 7. 热电偶电流（对应 stampThermocouples）诺顿等效模型
         tcDevs.forEach(tc => {
-            if (tc.vSourceIdx !== undefined) tc.physCurrent = results[tc.vSourceIdx];
+            const cP = this.portToCluster.get(`${tc.id}_wire_r`);
+            const cN = this.portToCluster.get(`${tc.id}_wire_l`);
+            if (cP !== undefined && cN !== undefined) {
+                const vDiff = (this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0);
+                const rInt = tc.currentResistance || 0.5;
+                const voltage = tc.currentVoltage;
+                tc.physCurrent = (voltage - vDiff) / rInt;
+            }
         });
 
-        // 6. 运放电流
+        // ─ 8. 运放电流（对应 stampOpAmps）
         opAmps.forEach(op => {
             if (op.currentIdx !== undefined) op.outCurrent = results[op.currentIdx];
         });
 
-        // 7. 二极管电流
+        // ─ 9. 二极管电流（对应 stampDiodes）
         diodeDevs.forEach(dev => {
             const cA = this.portToCluster.get(`${dev.id}_wire_l`);
             const cC = this.portToCluster.get(`${dev.id}_wire_r`);
@@ -352,7 +387,7 @@ export class CircuitSolver {
             dev.physCurrent = (vDiff > vForward) ? (1 / rOn) * (vDiff - vForward) : 0;
         });
 
-        // 8. BJT 电流
+        // ─ 10. BJT 电流（对应 stampBJTs）
         bjtDevs.forEach(dev => {
             const cB = this.portToCluster.get(`${dev.id}_wire_b`);
             const cC = this.portToCluster.get(`${dev.id}_wire_c`);
@@ -386,7 +421,7 @@ export class CircuitSolver {
             }
         });
 
-        // 9. JFET 电流
+        // ─ 11. JFET 电流（对应 stampJFETs）
         jfetDevs.forEach(dev => {
             const cD = this.portToCluster.get(`${dev.id}_wire_d`);
             const cS = this.portToCluster.get(`${dev.id}_wire_s`);
@@ -396,7 +431,7 @@ export class CircuitSolver {
             dev.physCurrent = (vD - vS) / res;
         });
 
-        // 10. 电容/电感
+        // ─ 12.1 & 12.2 电容/电感（对应 stampReactives）
         capacitorDevs.forEach(dev => {
             const cL = this.portToCluster.get(`${dev.id}_wire_l`);
             const cR = this.portToCluster.get(`${dev.id}_wire_r`);
@@ -415,53 +450,57 @@ export class CircuitSolver {
             dev.updateState();
         });
 
-        // 11. 示波器电流
+        // ─ 13. 示波器电流（对应 stampOscilloscopes）
         oscDevs.forEach(dev => {
             if (dev.currentIdx !== undefined) dev.physCurrent = results[dev.currentIdx];
         });
 
-        // 12. LVDT/压力变送器电流
+        // ─ 14. LVDT/压力变送器电流（对应 stampLVDTs）
         lvdtDevs.forEach(dev => {
             if (dev.currentIdx !== undefined) dev.physCurrent = results[dev.currentIdx];
         });
 
-        // 13. 信号发生器
-        sgDevs.forEach(dev => {
-            const cCh1p = this.portToCluster.get(`${dev.id}_wire_ch1p`);
-            const cCh1n = this.portToCluster.get(`${dev.id}_wire_ch1n`);
-            const cCh2p = this.portToCluster.get(`${dev.id}_wire_ch2p`);
-            const cCh2n = this.portToCluster.get(`${dev.id}_wire_ch2n`);
-            
-            if (cCh1p !== undefined && cCh1n !== undefined) {
-                dev.ch1Current = ((this.nodeVoltages.get(cCh1p) || 0) - (this.nodeVoltages.get(cCh1n) || 0)) * 0.001;
-            }
-            if (cCh2p !== undefined && cCh2n !== undefined) {
-                dev.ch2Current = ((this.nodeVoltages.get(cCh2p) || 0) - (this.nodeVoltages.get(cCh2n) || 0)) * 0.001;
-            }
-        });
+        // ─ 15. 信号发生器电流（对应 stampSignalGenerators）
+        sgDevs.forEach(sg => {
+            [
+                { key: 'ch1', p: 'ch1p', n: 'ch1n', idx: 0 },
+                { key: 'ch2', p: 'ch2p', n: 'ch2n', idx: 1 }
+            ].forEach(chCfg => {
+                const ch = sg.channels[chCfg.idx];
+                const portP = this.portToCluster.get(`${sg.id}_wire_${chCfg.p}`);
+                const portN = this.portToCluster.get(`${sg.id}_wire_${chCfg.n}`);
 
-        // 14. 电源设备（DC/AC/三相）
-        powerDevs.forEach(dev => {
-            const cP = this.portToCluster.get(`${dev.id}_wire_p`);
-            const cN = this.portToCluster.get(`${dev.id}_wire_n`);
-            if (cP === undefined || cN === undefined) return;
-            const vDiff = (this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0);
-            const rOn = dev.rOn || 0.1;
-            const voltage = dev.getValue(this.currentTime);
-            dev.physCurrent = (voltage - vDiff) / rOn;
-        });
+                if (ch.enabled && portP !== undefined && portN !== undefined) {
+                    const vP = this.nodeVoltages.get(portP) || 0;
+                    const vN = this.nodeVoltages.get(portN) || 0;
 
-        power3Devs.forEach(dev => {
-            dev.phaseCurrents = { u: 0, v: 0, w: 0 };
-            ['u', 'v', 'w'].forEach(phase => {
-                const cP = this.portToCluster.get(`${dev.id}_wire_${phase}`);
-                const cN = this.portToCluster.get(`${dev.id}_wire_n`);
-                if (cP === undefined || cN === undefined) return;
-                const vDiff = (this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0);
-                const rOn = dev.rOn || 0.1;
-                const voltage = dev.getPhaseVoltage(phase, this.currentTime);
-                dev.phaseCurrents[phase] = (voltage - vDiff) / rOn;
+                    // 诺顿模型下的负载电流计算：
+                    // I_load = Is - (vP - vN) * Gs
+                    // 其中 Is 是内部理想电流源，Gs 是 1/50 欧姆
+                    const Vs = sg.voltOutputs[chCfg.key]; // 理想电压
+                    const Rs = 50;
+
+                    // 这里的电流是从 P 流向 N 的外部电流
+                    const current = (Vs - (vP - vN)) / Rs;
+
+                    if (chCfg.idx === 0) sg.ch1Current = current;
+                    else sg.ch2Current = current;
+                } else {
+                    if (chCfg.idx === 0) sg.ch1Current = 0;
+                    else sg.ch2Current = 0;
+                }
             });
+        });
+        // ─ 16 电压型继电器线圈电流（对应 stampRelays）
+        relayDevs.forEach(dev => {
+            const cL = this.portToCluster.get(`${dev.id}_wire_l`);
+            const cR = this.portToCluster.get(`${dev.id}_wire_r`);
+            if (cL !== undefined && cR !== undefined) {
+                const vL = this.nodeVoltages.get(cL) || 0;
+                const vR = this.nodeVoltages.get(cR) || 0;
+                const R = dev.currentResistance || 1000;
+                dev.physCurrent = (vL - vR) / R;
+            }
         });
     }
 
@@ -528,10 +567,19 @@ export class CircuitSolver {
     }
 
     _getPhysicalFlowIntoPort(dev, extPort) {
+        // ─ 1. 电阻电流 + 12. 电容/电感电流（对应 stampResistors + stampReactives）
         if (dev.type === 'resistor' || dev.type === 'capacitor' || dev.type === 'inductor') {
             const total = dev.physCurrent || 0;
             return extPort.endsWith('_l') ? -total : total;
         }
+        // ─ 16 电压型继电器线圈电流（对应 stampRelays）
+        if (dev.type === 'relay' && dev.special === 'voltage') {
+            const i = dev.physCurrent || 0;
+            if (extPort.endsWith('_l')) return -i;
+            if (extPort.endsWith('_r')) return i;
+            return 0;
+        }
+        // ─ 2. 压力传感器电流（对应 stampPressureSensors）
         if (dev.type === 'pressure_sensor') {
             if (extPort.endsWith('_r1l')) return -(dev.r1Current || 0);
             if (extPort.endsWith('_r1r')) return (dev.r1Current || 0);
@@ -539,17 +587,15 @@ export class CircuitSolver {
             if (extPort.endsWith('_r2r')) return (dev.r2Current || 0);
             return 0;
         }
-        if (dev.type === 'relay' && dev.special === 'voltage') {
-            if (extPort.endsWith('_l')) return -(dev.physCurrent || 0);
-            if (extPort.endsWith('_r')) return (dev.physCurrent || 0);
-            return 0;
-        }
+
+        // ─ 3. 变送器缓存压差（对应 stampTransmitters）
         if (dev.type === 'transmitter_2wire') {
             const i = (dev._lastVDiff > 10) ? (dev._lastVDiff * (dev._lastG || 0)) : 0;
             if (extPort.endsWith('_n')) return i;
             if (extPort.endsWith('_p')) return -i;
             return 0;
         }
+        // ─ 4. & 5. 电源电流（对应 stampPowerSources & stampPower3Sources）
         // DC/AC/三相电源：诺顿等效（电流源+内阻）直接从已计算的 physCurrent 获取
         if (dev.type === 'source' || dev.type === 'ac_source') {
             const i = dev.physCurrent || 0;
@@ -564,6 +610,7 @@ export class CircuitSolver {
             if (extPort.endsWith('_n')) return -i;
             return 0;
         }
+        // ─ 6. PID 电流（对应 stampPIDs）
         if (dev.type === 'PID') {
             if (extPort.endsWith('_po1') || extPort.endsWith('_no1')) {
                 if (dev.outModes.CH1 === '4-20mA') {
@@ -604,24 +651,34 @@ export class CircuitSolver {
                 const vcc = this.getVoltageAtPort(`${dev.id}_wire_vcc`);
                 const iLoop = vcc / 50;
                 return extPort.endsWith('_vcc') ? -iLoop : iLoop;
-            }          
+            }
             return 0;
         }
+        // ─ 7. 热电偶电流（
+        if (dev.type === 'tc') {
+            if (!this.portToCluster.get(`${dev.id}_wire_l`) || !this.portToCluster.get(`${dev.id}_wire_r`)) return 0;
+            const current = dev.physCurrent || 0;
+            return extPort.endsWith('_l') ? -current : current;
+        }        
+        // ─ 8. 运放电流（对应 stampOpAmps）
         if (dev.type === 'amplifier') {
             if (extPort.endsWith('_p') || extPort.endsWith('_n')) return 0;
             if (extPort.endsWith('_OUT')) return -dev.outCurrent || 0;
         }
+        // ─ 9. 二极管电流（对应 stampDiodes）
         if (dev.type === 'diode') {
             if (!this.portToCluster.get(`${dev.id}_wire_l`) || !this.portToCluster.get(`${dev.id}_wire_r`)) return 0;
             const current = dev.physCurrent || 0;
             return extPort.endsWith('_l') ? -current : current;
         }
+        // ─ 10. BJT 电流（对应 stampBJTs）
         if (dev.type === 'bjt') {
             if (!dev.physCurrents) return 0;
             if (extPort.endsWith('_b')) return -dev.physCurrents.b;
             if (extPort.endsWith('_c')) return -dev.physCurrents.c;
             if (extPort.endsWith('_e')) return -dev.physCurrents.e;
         }
+        // ─ 11. JFET 电流（对应 stampJFETs）
         if (dev.type === 'njfet') {
             const i = dev.physCurrent || 0;
             if (extPort.endsWith('_d')) return -i;
@@ -630,12 +687,14 @@ export class CircuitSolver {
             return 0;
         }
         if (dev.type === 'oscilloscope_tri') return 0;
+        // ─ 13. 示波器电流（对应 stampOscilloscopes）
         if (dev.type === 'oscilloscope') {
             const i = dev.physCurrent || 0;
             if (extPort.endsWith('_l')) return i;
             if (extPort.endsWith('_r')) return -i;
             return 0;
         }
+        // ─ 14. LVDT/压力变送器电流（对应 stampLVDTs）
         if (dev.type === 'pressure_transducer') {
             const i = dev.physCurrent || 0;
             if (extPort.endsWith('_outp')) return -i;
@@ -648,6 +707,7 @@ export class CircuitSolver {
             }
             return 0;
         }
+        // ─ 15. 信号发生器电流（对应 stampSignalGenerators）
         if (dev.type === 'signal_generator') {
             if (extPort.endsWith('_ch1p')) return dev.ch1Current || 0;
             if (extPort.endsWith('_ch1n')) return -(dev.ch1Current || 0);

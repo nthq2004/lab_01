@@ -8,6 +8,7 @@ export class ACPower extends BaseComponent {
         this.type = 'ac_source';
         this.cache = 'fixed'; // 使用固定缓存，除非参数改变才刷新
         this.isOn = false;
+        this.rOn = 0.1;
 
         // 核心参数
         this.voltageRMS = 24;      // 有效值电压 (显示值)
