@@ -68,6 +68,54 @@ export const DeviceStamps = {
         });
     },
 
+    // ─── 3a. DC/AC 电源（诺顿等效：电流源 + 内阻并联） ──────────────────
+    stampPowerSources(ctx, G, B, powerDevs, currentVSourceIdx, currentTime) {
+        powerDevs.forEach((dev, idx) => {
+            const pId = `${dev.id}_wire_p`;
+            const nId = `${dev.id}_wire_n`;
+            const cP = ctx.portToCluster.get(pId);
+            const cN = ctx.portToCluster.get(nId);
+            
+            if (cP !== undefined && cN !== undefined) {
+                const voltage = dev.getValue(currentTime);
+                const rOn = dev.rOn || 0.1;
+                
+                // 诺顿等效：
+                // 1. 填充内阻导纳到 G 矩阵（p 到 n 之间）
+                this._fill(ctx, G, B, cP, cN, 1 / rOn);
+                
+                // 2. 在 B 向量中注入等效电流源：I = V / rOn
+                const iSource = voltage / rOn;
+                this._addI(ctx, B, cP, cN, iSource);
+            }
+        });
+    },
+
+    // ─── 3b. 三相电源（诺顿等效：每相都是电流源 + 内阻并联） ──────────────
+    stampPower3Sources(ctx, G, B, power3Devs, currentVSourceIdx, currentTime) {
+        power3Devs.forEach((dev, idx) => {
+            ['u', 'v', 'w'].forEach((phase, phaseIdx) => {
+                const pId = `${dev.id}_wire_${phase}`;
+                const nId = `${dev.id}_wire_n`;
+                const cP = ctx.portToCluster.get(pId);
+                const cN = ctx.portToCluster.get(nId);
+                
+                if (cP !== undefined && cN !== undefined) {
+                    const voltage = dev.getPhaseVoltage(phase, currentTime);
+                    const rOn = dev.rOn || 0.1;
+                    
+                    // 诺顿等效：
+                    // 1. 填充内阻导纳到 G 矩阵（phase 到 n 之间）
+                    this._fill(ctx, G, B, cP, cN, 1 / rOn);
+                    
+                    // 2. 在 B 向量中注入等效电流源：I = V / rOn
+                    const iSource = voltage / rOn;
+                    this._addI(ctx, B, cP, cN, iSource);
+                }
+            });
+        });
+    },
+
     // ─── 4. PID 控制器 ────────────────────────────────────────────────────
     /**
      * @returns {number} 更新后的 currentVSourceIdx
@@ -98,6 +146,15 @@ export const DeviceStamps = {
             }
             const p = `${pid.id}_wire_`;
 
+            // PID 内部 GND 端点（no1、no2 负端都连接到这里）
+            const cGnd = ctx.portToCluster.get(`${p}gnd`);
+            
+            // VCC 和 GND 之间注入 50Ω 电阻
+            const cVcc = ctx.portToCluster.get(`${p}vcc`);
+            if (cVcc !== undefined && cGnd !== undefined) {
+                this._fill(ctx, G, B, cVcc, cGnd, 1 / 50);  // 50Ω = 0.02 S
+            }
+
             // 4-20mA 输入回路：pi1(24V馈电) + ni1(250Ω内阻)
             const cPi1 = ctx.portToCluster.get(`${p}pi1`);
             const cNi1 = ctx.portToCluster.get(`${p}ni1`);
@@ -106,11 +163,16 @@ export const DeviceStamps = {
             if (cNi1 !== undefined)
                 this._fill(ctx, G, B, cNi1, -1, 1 / 250);
 
-            // CH1 输出
+            // CH1 输出：po1(+) 和 no1(-，连接到 GND)
             const cPo1 = ctx.portToCluster.get(`${p}po1`);
             const cNo1 = ctx.portToCluster.get(`${p}no1`);
             if (cPo1 !== undefined && cNo1 !== undefined &&
                 (pid.outSelection === 'CH1' || pid.outSelection === 'BOTH')) {
+                // no1 和 gnd 等电位
+                if (cGnd !== undefined) {
+                    this._fill(ctx, G, B, cNo1, cGnd, 1e6);  // 极强硬连接
+                }
+                
                 if (pid.outModes.CH1 === '4-20mA') {
                     injectLimitedCurrent(pid, cPo1, cNo1, pid.output1mA, 23.5, (info) => {
                         pid._ch1CurrentInfo = info;
@@ -123,11 +185,16 @@ export const DeviceStamps = {
                 }
             }
 
-            // CH2 输出
+            // CH2 输出：po2(+) 和 no2(-，连接到 GND)
             const cPo2 = ctx.portToCluster.get(`${p}po2`);
             const cNo2 = ctx.portToCluster.get(`${p}no2`);
             if (cPo2 !== undefined && cNo2 !== undefined &&
                 (pid.outSelection === 'CH2' || pid.outSelection === 'BOTH')) {
+                // no2 和 gnd 等电位
+                if (cGnd !== undefined) {
+                    this._fill(ctx, G, B, cNo2, cGnd, 1e6);  // 极强硬连接
+                }
+                
                 if (pid.outModes.CH2 === '4-20mA') {
                     injectLimitedCurrent(pid, cPo2, cNo2, pid.output2mA, 23.5, (info) => {
                         pid._ch2CurrentInfo = info;
@@ -165,6 +232,12 @@ export const DeviceStamps = {
 
             if (cOut !== undefined) {
                 const outM = ctx.nodeMap.get(cOut);
+                
+                // 输出 0.2Ω 源电阻（导纳 = 1/0.2 = 5 S）
+                if (outM !== undefined) {
+                    this._fill(ctx, G, B, cOut, cOut, 5);
+                }
+                
                 if (outM !== undefined) G[outM][opVIdx] += 1;
 
                 if (op.internalState === 'linear') {

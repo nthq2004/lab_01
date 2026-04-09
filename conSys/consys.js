@@ -222,13 +222,13 @@ export class ControlSystem {
             { id: 0, name: "1. 冷却水温度控制系统运行" },
             { id: 1, name: "2. PT100短路故障排除(项目6.1)" },
             { id: 2, name: "3. PT100断路故障排除(项目6.1)" },
-            { id: 3, name: "4. 温度变送器输出开路故障排除(项目6.1)" },
+            { id: 3, name: "4. 温度变送器输出断路故障排除" },
             { id: 4, name: "5. 温度变送器零点漂移故障排除(项目6.3)" },
             { id: 5, name: "6. 温度变送器量程偏差故障排除(项目6.3)" },
             { id: 6, name: "7. PID调节器参数失调故障排除(项目6.4)" },
             { id: 7, name: "8. PID调节器输出回路故障排除(项目6.4)" },
             { id: 8, name: "9. 三通调节阀执行机构卡死故障排除(项目6.2)" },
-            { id: 9, name: "10. 三通调节阀信号输入回路开路故障排除" },
+            { id: 9, name: "10. 三通调节阀信号输入回路断路故障排除" },
         ];
 
         // 2. 动态填充 HTML 的 select 下拉框
@@ -556,8 +556,8 @@ export class ControlSystem {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.multimeter.mode = "RES200";
                     this.comps.multimeter._updateAngleByMode();
-                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_l', type: 'wire' };
-                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_r', type: 'wire' };
+                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_r', type: 'wire' };
+                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_l', type: 'wire' };
                     await this.addConnectionAnimated(conn1);
                     await this.addConnectionAnimated(conn2);
                     await new Promise(resolve => setTimeout(resolve, 5000));
@@ -565,8 +565,8 @@ export class ControlSystem {
                 },
                 check: () => {
                     const c1 = this.comps.multimeter.mode === "RES200" || this.comps.multimeter.mode === "DIODE";
-                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_l', type: 'wire' };
-                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_r', type: 'wire' };
+                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_r', type: 'wire' };
+                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_l', type: 'wire' };
                     const c2 = this.conns.some(c => this._connEqual(c, conn1));
                     const c3 = this.conns.some(c => this._connEqual(c, conn2));
                     const c4 = this.comps.multimeter.value < 1;
@@ -576,17 +576,17 @@ export class ControlSystem {
             {
                 msg: "7：更换PT100，确认新电阻的阻值正常。",
                 act: async () => {
-                    await new Promise(r => setTimeout(r, 3000));
+                    await new Promise(r => setTimeout(r, 2000));
                     this.comps.multimeter.mode = "RES200";
                     this.comps.multimeter._updateAngleByMode();
                     this.comps.pt._pt100Fault = null;
-                    await new Promise(r => setTimeout(r, 5000));
+                    await new Promise(r => setTimeout(r, 3000));
 
                 },
                 check: () => {
                     const c1 = this.comps.multimeter.mode === "RES200" || this.comps.multimeter.mode === "DIODE";
-                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_l', type: 'wire' };
-                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_r', type: 'wire' };
+                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_r', type: 'wire' };
+                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_l', type: 'wire' };
                     const c2 = this.conns.some(c => this._connEqual(c, conn1));
                     const c3 = this.conns.some(c => this._connEqual(c, conn2));
                     const c4 = this.comps.multimeter.value > 100;
@@ -596,9 +596,9 @@ export class ControlSystem {
             {
                 msg: "8：接入新的PT100，重新接入PID输入回路。",
                 act: async () => {
-                    await new Promise(r => setTimeout(r, 3000));
-                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_l', type: 'wire' };
-                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_r', type: 'wire' };
+                    await new Promise(r => setTimeout(r, 1000));
+                    const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_r', type: 'wire' };
+                    const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_l', type: 'wire' };
                     this.removeConn(conn1);
                     await new Promise(r => setTimeout(r, 2000)); // 等待2秒
                     this.removeConn(conn2);
@@ -797,7 +797,7 @@ export class ControlSystem {
 
                 },
                 check: () => {
-                    const c1 = this.comps.multimeter.mode === "RES200";
+                    const c1 = this.comps.multimeter.mode === "RES200"||this.comps.multimeter.mode === "RES2k";
                     const conn1 = { from: 'multimeter_wire_com', to: 'pt_wire_r', type: 'wire' };
                     const conn2 = { from: 'multimeter_wire_v', to: 'pt_wire_l', type: 'wire' };
                     const c2 = this.conns.some(c => this._connEqual(c, conn1));
@@ -874,7 +874,7 @@ export class ControlSystem {
 
         ];
         this.stepsArray[3] = [
-            // --- 温度变送器输出回路开路故障排除 ---
+            // --- 温度变送器输出回路断路故障排除 ---
             {
                 msg: "1：确保系统已经正常运行，PID控制器自动模式，PV与SV偏差小于10度，报警已消声、消闪。",
                 act: async () => {
@@ -897,11 +897,11 @@ export class ControlSystem {
                 }
             },
             {
-                msg: "2：触发温度变送器输出回路开路故障。",
+                msg: "2：触发温度变送器输出回路断路故障。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.ttrans.isBreak = true;
-                    await new Promise(r => setTimeout(r, 3000));
+                    await new Promise(r => setTimeout(r, 1000));
                 },
                 check: () => this.comps.ttrans.isBreak === true
             },
@@ -911,7 +911,7 @@ export class ControlSystem {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.monitor.btnMuteFunc();
                     this.comps.monitor.btnAckFunc();
-                    await new Promise(r => setTimeout(r, 3000));
+                    await new Promise(r => setTimeout(r, 1000));
                 },
                 check: async () => {
                     // 1. 先等待 6s 确保仿真引擎的温度升高并触发了报警逻辑
@@ -965,7 +965,7 @@ export class ControlSystem {
                 }
             },
             {
-                msg: "6：观察20mA电流表，电流为0，可确认温度变送器输出回路开路。",
+                msg: "6：观察20mA电流表，电流为0，可确认温度变送器输出回路断路。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.monitor.btnMuteFunc();
@@ -980,7 +980,7 @@ export class ControlSystem {
 
             },
             {
-                msg: "7：断开温度变送器电源接线，修复开路故障。",
+                msg: "7：断开温度变送器电源接线，修复断路故障。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
                     const transLines = [
@@ -1605,7 +1605,7 @@ export class ControlSystem {
 
         ];
         this.stepsArray[7] = [
-            // --- PID调节器输出回路开路故障排除 ---
+            // --- PID调节器输出回路断路故障排除 ---
             {
                 msg: "1：确保系统已经正常运行，PID控制器自动模式，PV与SV偏差小于10度，报警已消声、消闪。",
                 act: async () => {
@@ -1643,7 +1643,7 @@ export class ControlSystem {
                 }
             },
             {
-                msg: "2：触发PID调节器输出回路开路故障。",
+                msg: "2：触发PID调节器输出回路断路故障。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.pid.out1Fault = true;
@@ -1730,7 +1730,7 @@ export class ControlSystem {
 
             },
             {
-                msg: "6：关闭24V电源，测量输出回路电阻，电阻正常为250欧姆左右，确认是PID调节器输出回路开路故障。",
+                msg: "6：关闭24V电源，测量输出回路电阻，电阻正常为250欧姆左右，确认是PID调节器输出回路断路故障。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.dcpower.isOn = false;
@@ -1978,7 +1978,7 @@ export class ControlSystem {
 
         ];
         this.stepsArray[9] = [
-            // --- 三通调节阀信号输入回路开路故障排除 ---
+            // --- 三通调节阀信号输入回路断路故障排除 ---
             {
                 msg: "1：确保系统已经正常运行，PID控制器自动模式，PV与SV偏差小于10度，报警已消声、消闪。",
                 act: async () => {
@@ -2017,7 +2017,7 @@ export class ControlSystem {
                 }
             },
             {
-                msg: "2：触发三通调节阀信号输入回路开路故障。",
+                msg: "2：触发三通调节阀信号输入回路断路故障。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.valve.currentResistance = 1000000;
@@ -2103,7 +2103,7 @@ export class ControlSystem {
 
             },
             {
-                msg: "6：关闭24V电源，测量输出回路电阻，电阻正常为250欧姆左右，三通调节阀信号输入端子现在为无穷大，确认是三通调节阀信号输入回路开路故障。",
+                msg: "6：关闭24V电源，测量输出回路电阻，电阻正常为250欧姆左右，三通调节阀信号输入端子现在为无穷大，确认是三通调节阀信号输入回路断路故障。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.dcpower.isOn = false;
@@ -2132,7 +2132,7 @@ export class ControlSystem {
                 }
             },
             {
-                msg: "7：修复三通调节阀信号输入回路开路故障。万用表显示电阻约为250欧姆左右。接通电源，观察输出回路电流应大于4mA，万用表测量电压应大于1V。",
+                msg: "7：修复三通调节阀信号输入回路断路故障。万用表显示电阻约为250欧姆左右。接通电源，观察输出回路电流应大于4mA，万用表测量电压应大于1V。",
                 act: async () => {
                     await new Promise(r => setTimeout(r, 3000));
                     this.comps.valve.currentResistance = 250;
@@ -2190,9 +2190,9 @@ export class ControlSystem {
         this.FAULT_CONFIG = {
             1: {
                 id: 1,
-                name: "1. PT100 传感器短路",
+                name: "2. PT100 传感器短路",
                 trigger: () => {
-                    // 1: 设置开路故障
+                    // 1: 设置断路故障
                     this.comps['pt']._pt100Fault = 'short';
                 },
                 check: () => {
@@ -2204,9 +2204,9 @@ export class ControlSystem {
             },
             2: {
                 id: 2,
-                name: "2. PT100 传感器开路",
+                name: "3. PT100 传感器断路",
                 trigger: () => {
-                    // 1: 设置开路故障
+                    // 1: 设置断路故障
                     this.comps['pt']._pt100Fault = 'open';
                 },
                 check: () => { return this.comps['pt']._pt100Fault === 'open'; },
@@ -2216,9 +2216,9 @@ export class ControlSystem {
             },
             3: {
                 id: 3,
-                name: "3. 温度变送器输出开路",
+                name: "4. 温度变送器输出断路",
                 trigger: () => {
-                    // 1: 设置开路故障
+                    // 1: 设置断路故障
                     this.comps['ttrans'].isBreak = true;
                 },
                 check: () => { return this.comps['ttrans'].isBreak === true; },
@@ -2228,9 +2228,9 @@ export class ControlSystem {
             },
             4: {
                 id: 4,
-                name: "4. 温度变送器零点漂移",
+                name: "5. 温度变送器零点漂移",
                 trigger: () => {
-                    // 1: 设置开路故障
+                    // 1: 设置断路故障
                     this.comps['ttrans'].zeroAdj = 0.4;
                     this.comps['ttrans'].knobs['zero'].rotation(180);
                     this.comps.ttrans._refreshCache();
@@ -2244,9 +2244,9 @@ export class ControlSystem {
             },
             5: {
                 id: 5,
-                name: "5. 温度变送器量程偏差",
+                name: "6. 温度变送器量程偏差",
                 trigger: () => {
-                    // 1: 设置开路故障
+                    // 1: 设置断路故障
                     this.comps['ttrans'].spanAdj = 1.125;
                     this.comps['ttrans'].knobs['span'].rotation(90);
                     this.comps.ttrans._refreshCache();                         
@@ -2260,7 +2260,7 @@ export class ControlSystem {
             },
             6: {
                 id: 6,
-                name: "6. PID调节器参数失调",
+                name: "7. PID调节器参数失调",
                 trigger: () => {
                     this.comps['pid'].P = 0.05;
                     this.comps['pid'].I = 0;
@@ -2273,7 +2273,7 @@ export class ControlSystem {
             },
             7: {
                 id: 7,
-                name: "7. PID调节器输出回路开路",
+                name: "8. PID调节器输出回路断路",
                 trigger: () => {
                     this.comps['pid'].out1Fault = true;
                 },
@@ -2284,7 +2284,7 @@ export class ControlSystem {
             },
             8: {
                 id: 8,
-                name: "8. 三通调节阀执行机构卡死",
+                name: "9. 三通调节阀执行机构卡死",
                 trigger: () => {
                     this.comps['valve'].isStuck = true;
                 },
@@ -2295,7 +2295,7 @@ export class ControlSystem {
             },
             9: {
                 id: 9,
-                name: "9. 三通调节阀信号输入回路开路",
+                name: "10. 三通调节阀信号输入回路断路",
                 trigger: () => {
                     this.comps['valve'].currentResistance = 1e8;
                 },

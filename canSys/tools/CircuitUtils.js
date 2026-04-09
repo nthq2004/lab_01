@@ -38,7 +38,8 @@ export const CircuitUtils = {
             const cIdx = portToCluster.get(pId);
             return cIdx !== undefined ? (nodeVoltages.get(cIdx) || 0) : 0;
         };
-        if (!portToCluster.get(pA) || !portToCluster.get(pB)) return 0;
+        // 教训，原来是这样，结构cluster的数值可能为0，导致始终返回0.  if (！portToCluster.get(pA)|| ！portToCluster.get(pB) ) return 0;
+        if (portToCluster.get(pA) ===undefined || portToCluster.get(pB) ===undefined) return 0;
         return getV(pA) - getV(pB);
     },
 
