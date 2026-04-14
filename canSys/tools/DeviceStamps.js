@@ -433,4 +433,92 @@ export const DeviceStamps = {
                 this._fill(ctx, G, B, c1, c2, 1 / R);
         });
     },
+
+    // ─── 17. AI 模块（模拟量输入） ────────────────────────────────────
+    /**
+     * AI 模块注入：
+     * CH1/CH2: 4-20mA 电流输入，通过 250Ω 采样电阻读取电流
+     * CH3: RTD/PT100 热电阻输入，读取电阻值
+     * CH4: TC/热电偶输入，读取电压
+     * CAN1/CAN2: 当终端开关有效时，注入 120Ω 终端电阻
+     */
+    stampAI(ctx, G, B, aiDevs, currentVSourceIdx) {
+        aiDevs.forEach(ai => {
+            if (!ai.powerOn) return;
+
+            const p = `${ai.id}_wire_`;
+
+            // VCC 和 GND 之间：注入电源内阻 50Ω（保持电源稳定）
+            const cVcc = ctx.portToCluster.get(`${p}vcc`);
+            const cGnd = ctx.portToCluster.get(`${p}gnd`);
+            if (cVcc !== undefined && cGnd !== undefined) {
+                this._fill(ctx, G, B, cVcc, cGnd, 1 / 50);  // 50Ω 电源内阻
+            }
+
+            // ── CH1 (4-20mA) ──────────────────────────────────────────
+            // 结构：电压源注入 - 在 ch1p 端口直接注入 24V 电压源
+            const c_ch1p = ctx.portToCluster.get(`${p}ch1p`);
+            const c_ch1n = ctx.portToCluster.get(`${p}ch1n`);
+            if (c_ch1p !== undefined) {
+                // 1. 在 ch1p 和 gnd 之间注入 24V 电压源（需要额外的方程）
+                this._addV(ctx, G, B, c_ch1p, cGnd, 24.0, currentVSourceIdx++);
+            }
+            if (c_ch1n !== undefined) {
+                // 2. 采样电阻在端口与接地端之间
+                this._fill(ctx, G, B, c_ch1n, cGnd, 1 / 250);
+            }            
+
+            // ── CH2 (4-20mA) ──────────────────────────────────────────
+            const c_ch2p = ctx.portToCluster.get(`${p}ch2p`);
+            const c_ch2n = ctx.portToCluster.get(`${p}ch2n`);
+            if (c_ch2p !== undefined) {
+                // 1. 在 ch2p 和 gnd 之间注入 24V 电压源（需要额外的方程）
+                this._addV(ctx, G, B, c_ch2p, cGnd, 24.0, currentVSourceIdx++);
+            }
+            if (c_ch2n !== undefined) {
+                // 2. 采样电阻在端口与接地端之间
+                this._fill(ctx, G, B, c_ch2n, cGnd, 1 / 250);
+            }  
+
+            // ── CH3 (RTD/PT100) ────────────────────────────────────────
+            // 结构：诺顿等效 - 同 CH1/CH2 的馈电方式
+            const c_ch3p = ctx.portToCluster.get(`${p}ch3p`);
+            const c_ch3n = ctx.portToCluster.get(`${p}ch3n`);
+            if (c_ch3p !== undefined && c_ch3n !== undefined) {
+                // 诺顿等效
+                const rFeed = 1000;
+                const vFeed = 1.0;
+                this._fill(ctx, G, B, c_ch3p, c_ch3n, 1 / rFeed);
+                const iEq = vFeed / rFeed;
+                this._addI(ctx, B, c_ch3p, c_ch3n, iEq);
+            }
+
+            // ── CH4 (TC/热电偶) ────────────────────────────────────────
+            // 结构：直接连接热电偶两端，高阻输入（>1MΩ）
+            const c_ch4p = ctx.portToCluster.get(`${p}ch4p`);
+            const c_ch4n = ctx.portToCluster.get(`${p}ch4n`);
+            if (c_ch4p !== undefined && c_ch4n !== undefined) {
+                // 注入高阻输入（1MΩ），防止漏电流
+                this._fill(ctx, G, B, c_ch4p, c_ch4n, 1 / 1000000);
+            }
+
+            // ── CAN1 和 CAN2：终端电阻注入（当 termEnabled 有效时） ────
+            if (ai.termEnabled) {
+                const c_can1p = ctx.portToCluster.get(`${p}can1p`);
+                const c_can1n = ctx.portToCluster.get(`${p}can1n`);
+                if (c_can1p !== undefined && c_can1n !== undefined) {
+                    // 注入 120Ω 终端电阻
+                    this._fill(ctx, G, B, c_can1p, c_can1n, 1 / 120);
+                }
+
+                const c_can2p = ctx.portToCluster.get(`${p}can2p`);
+                const c_can2n = ctx.portToCluster.get(`${p}can2n`);
+                if (c_can2p !== undefined && c_can2n !== undefined) {
+                    // 注入 120Ω 终端电阻
+                    this._fill(ctx, G, B, c_can2p, c_can2n, 1 / 120);
+                }
+            }
+        });
+    },
 };
+

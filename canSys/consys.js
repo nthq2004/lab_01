@@ -13,6 +13,7 @@ import { Pump } from './components/Pump.js';
 import { Cooler } from './components/Cooler.js';
 import { Engine } from './components/Engine.js';
 
+
 import { PIDController } from './components/PID.js';
 import { OvenSystem } from './components/OvenSystem.js';
 import { ElecValve } from './components/ElecValve.js';
@@ -40,7 +41,7 @@ import { Capacitor } from './components/Capacitor.js';
 import { JFET } from './components/JFET.js';
 import { Diode } from './components/Diode.js';
 import { Transistor } from './components/Transistor.js';
-
+import { RealResistor} from './components/RealResistor.js';
 import { RealVariResistor } from './components/RealVariResistor.js';
 import { CoolingSystem } from './components/CoolingSystem.js';
 
@@ -51,6 +52,14 @@ import { Renderer } from './lib/Renderer.js';
 import { UIManager } from './lib/UIManager.js';
 import { WorkflowManager } from './lib/WorkflowManager.js';
 
+import { AIModule } from './can/AI.js';
+import { AOModule } from './can/AO.js';
+import { DIModule } from './can/DI.js';
+import { DOModule } from './can/DO.js';
+import { CentralComputer } from './can/CentralComputer.js';
+import { CANBus } from './can/CANBUS.js';
+import { createCANSystem } from './can/CANBUS.js';
+import { BUSCON } from './can/BUSCON.js';
 /**
  * ControlSystem - 控制系统仿真引擎
  * 负责组件管理、物理计算、自动/手动连线逻辑及渲染更新
@@ -118,21 +127,19 @@ export class ControlSystem {
         const offsetY = (window.innerHeight - baseHeight * scale) / 2;
 
         const componentConfigs = [
-            { Class: Monitor, id: 'monitor', x: 850, y: 550 },
-            { Class: PIDController, id: 'pid', x: 710, y: 20 },
-            { Class: TempTransmitter, id: 'ttrans', x: 150, y: 200 },
-            { Class: CoolingSystem, id: 'pt', x: 180, y: 450 },
-            { Class: VariResistor, id: 'stdres', x: 1220, y: 340 },
-            { Class: TeeConnector, id: 'tconn', x: 20, y: 680, direction: 'right' },
-            { Class: Pump, id: 'pump', x: 30, y: 580 },
-            { Class: Engine, id: 'engine', x: 400, y: 380 },
-            { Class: ElecValve, id: 'valve', x: 600, y: 660 },
-            { Class: Cooler, id: 'cooler', x: 200, y: 800 },
-            { Class: DCPower, id: 'dcpower', x: 1140, y: 80 },
-            { Class: Ground, id: 'gnd', x: 1180, y: 300 },            
-            { Class: AmpMeter, id: 'ampmeter', x: 400, y: 100 },
-            { Class: AmpMeter, id: 'ampmeter2', x: 1520, y: 600 },
-            { Class: Multimeter, id: 'multimeter', x: 1400, y: 30 },
+            { Class: AIModule, id: 'ai', x: 50, y: 340 },
+            // { Class: AOModule, id: 'ao', x: 550, y: 340 },
+            // { Class: DIModule, id: 'di', x: 1000, y: 340 },
+            // { Class: DOModule, id: 'do', x: 1450, y: 340 }, 
+            { Class: CentralComputer, id: 'cc', x: 650, y: 40 },   
+            { Class: BUSCON, id: 'can', x: 150, y: 1000 },                                                  
+             { Class: VariResistor, id: 'pt', x: 20, y: 240 },
+             { Class: RealResistor, id: 'r', x: 20, y: 440 },             
+            // { Class: Resistor, id: 'termr2', x: 1220, y: 340 },
+            { Class: DCPower, id: 'dcpower', x: 10, y: 10 },
+            { Class: Ground, id: 'gnd', x: 80, y: 300 },
+            { Class: Multimeter, id: 'multimeter', x: 1900, y: 30 },
+            { Class: AmpMeter, id: 'ampmeter', x: 20, y: 300 },
             // { Class: Oscilloscope_tri, id: 'osc', x: 1280, y: 400 },
         ];
 
@@ -155,15 +162,8 @@ export class ControlSystem {
         this.voltageSolver = new CircuitSolver(this);
         this.pressSolver = new PneumaticSolver(this);
         this.showComp = new Show(this);
-
-        this.requiredPipes = [
-            { from: 'engine_pipe_o', to: 'pump_pipe_i', type: 'pipe' },
-            { from: 'pump_pipe_o', to: 'tconn_pipe_l', type: 'pipe' },
-            { from: 'tconn_pipe_u', to: 'valve_pipe_u', type: 'pipe' },
-            { from: 'tconn_pipe_r', to: 'cooler_pipe_i', type: 'pipe' },
-            { from: 'cooler_pipe_o', to: 'valve_pipe_l', type: 'pipe' },
-            { from: 'valve_pipe_r', to: 'engine_pipe_i', type: 'pipe' }
-        ];
+        this.bus = new createCANSystem({cc:this.comps.cc,ai:this.comps.ai});
+        // this.bus = new createCANSystem({cc:this.comps.cc,ai:this.comps.ai,ao:this.comps.ao,di:this.comps.di,do:this.comps.do});
 
         this._physicsTimer = setInterval(() => this._updatePhysics(), 1000 / 20);
         this._renderLoop();

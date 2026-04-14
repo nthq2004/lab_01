@@ -40,9 +40,10 @@ import { Capacitor } from './components/Capacitor.js';
 import { JFET } from './components/JFET.js';
 import { Diode } from './components/Diode.js';
 import { Transistor } from './components/Transistor.js';
+import { CoolingSystem } from './components/CoolingSystem.js';
 
 import { RealVariResistor } from './components/RealVariResistor.js';
-import { CoolingSystem } from './components/CoolingSystem.js';
+
 
 // ── 新拆分的子模块 ──────────────────────────────────────────────
 import { HistoryManager } from './lib/HistoryManager.js';
