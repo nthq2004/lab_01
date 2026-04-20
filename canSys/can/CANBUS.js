@@ -218,7 +218,7 @@ export class CANBus {
             txCount: 0,
             rxCount: 0,
             lastActivity: 0,
-            online: module.busConnected && !module.commFault,
+            online: module.powerOn && module.busConnected && !module.commFault,
         });
         // 3. 注册订阅关系
         //    遍历该节点订阅的所有帧 ID，在总线的订阅列表中建立映射
@@ -713,10 +713,10 @@ export class CANBus {
     isNodeOnline(moduleId) {
         return this._nodes.get(moduleId)?.online ?? false;
     }
-    setNodeOnline(moduleId){
+    setNodeOnline(moduleId) {
         this._nodes.get(moduleId).online = true;
     }
-    resetNodeOnline(moduleId){
+    resetNodeOnline(moduleId) {
         this._nodes.get(moduleId).online = false;
     }
     // ══════════════════════════════════════════
@@ -777,7 +777,7 @@ export class CANBus {
         this._heartbeatInterval = setInterval(() => {
             // 2. 发送条件检查
             // 只有当总线未关闭 (Bus-Off) 且 未处于静音模式时，才发送心跳            
-            if (!this._busOff && !this.silent ) {
+            if (!this._busOff && !this.silent) {
                 // 3. 发送广播消息，数据为 [0x05, 0x00]
                 // 0x05 通常代表 CANopen 协议中的 'Operational' (运行中) 状态
                 // 0x00 可能是保留位或表示无特定错误                
@@ -832,7 +832,8 @@ export const CANParser = {
         // 将高字节和低字节拼接成有符号 16 位整数        
         const unpack16s = (hi, lo) => {
             let v = (hi << 8) | lo;
-            // 符号扩展：如果最高位是 1（负数），则减去 0x10000 转为 JS 的负数表示            
+            // 符号扩展：如果最高位是 1（负数），则减去 0x10000 转为 JS 的负数表示
+            // 注意：0x8000 (32768) 应该理解为 -32768，因此用 >= 而非 >
             if (v > 0x8000) v -= 0x10000;
             return v;
         };
@@ -940,7 +941,7 @@ export const CANParser = {
  * // 之后各模块可通过 this.sys.canBus.send(frame) 发送
  */
 export function createCANSystem(modules, busConfig = {}) {
-    const bus = new CANBus({ bitrate: 250000, verbose: true, ...busConfig });
+    const bus = new CANBus({ bitrate: 250000, verbose: false, ...busConfig });
 
     // 挂载各模块（按优先级顺序）
     if (modules.cc) bus.attach(modules.cc);

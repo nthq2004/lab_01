@@ -110,6 +110,51 @@ export const CircuitUtils = {
                 if (r2lIdx !== undefined && r2rIdx !== undefined)
                     resistorList.push({ l: r2lIdx, r: r2rIdx, R: dev.r2 === undefined ? 1e9 : dev.r2 });
             }
+            if (dev.special === 'can') {
+                const lIdx = portToCluster.get(`${dev.id}_wire_can1p`);
+                const rIdx = portToCluster.get(`${dev.id}_wire_can1n`);
+                if (lIdx !== undefined && rIdx !== undefined) {
+                    const r = dev.currentResistance === undefined ? 1e9 : dev.currentResistance;
+                    resistorList.push({ l: lIdx, r: rIdx, R: r });
+                }
+                const l2Idx = portToCluster.get(`${dev.id}_wire_can2p`);
+                const r2Idx = portToCluster.get(`${dev.id}_wire_can2n`);
+                if (l2Idx !== undefined && r2Idx !== undefined) {
+                    const r = dev.currentResistance === undefined ? 1e9 : dev.currentResistance;
+                    resistorList.push({ l: l2Idx, r: r2Idx, R: r });
+                }
+            }
+            if (dev.type === 'relay' && dev.special === 'voltage') {
+                const lIdx = portToCluster.get(`${dev.id}_wire_l`);
+                const rIdx = portToCluster.get(`${dev.id}_wire_r`);
+                if (lIdx !== undefined && rIdx !== undefined) {
+                    const r = dev.currentResistance === undefined ? 1e9 : dev.currentResistance;
+                    resistorList.push({ l: lIdx, r: rIdx, R: r });
+                }
+            }
+            if (dev.type === 'tc') {
+                const lIdx = portToCluster.get(`${dev.id}_wire_l`);
+                const rIdx = portToCluster.get(`${dev.id}_wire_r`);
+                if (lIdx !== undefined && rIdx !== undefined) {
+                    const r = dev.currentResistance === undefined ? 1e9 : dev.currentResistance;
+                    resistorList.push({ l: lIdx, r: rIdx, R: r });
+                }
+            }
+            if (dev.type === 'calibrator') {
+                const lIdx = portToCluster.get(`${dev.id}_wire_src_v`);
+                const rIdx = portToCluster.get(`${dev.id}_wire_src_com`);
+                let r = Infinity;
+                if (lIdx !== undefined && rIdx !== undefined) {
+                    if (dev.sourceMode === "SRC_RES" ) {
+                        r = dev.sourceValue;
+
+                    }else if(dev.sourceMode === "SRC_RTD") {
+                        r = dev._tempToRTDOhm(dev.sourceValue);
+
+                    }
+                    resistorList.push({ l: lIdx, r: rIdx, R: r });
+                }
+            }
         }
 
         // 填充导纳矩阵
@@ -167,7 +212,6 @@ export const CircuitUtils = {
         if (clusterA === clusterB) return { totalR: 0, count: 0 };
 
         let inverseRSum = 0, resistorCount = 0, hasZeroResistor = false;
-
         const processResistor = (rValue) => {
             const r = rValue === undefined ? 1e9 : rValue;
             if (r < 0.001) hasZeroResistor = true;
@@ -200,6 +244,24 @@ export const CircuitUtils = {
                 const inAB = (clusterA.has(`${dev.id}_wire_l`) && clusterB.has(`${dev.id}_wire_r`)) ||
                     (clusterB.has(`${dev.id}_wire_l`) && clusterA.has(`${dev.id}_wire_r`));
                 if (inAB) processResistor(dev.currentResistance);
+            }
+            if (dev.special === 'can') {
+                const inAB = (clusterA.has(`${dev.id}_wire_can1p`) && clusterB.has(`${dev.id}_wire_can1n`)) ||
+                    (clusterB.has(`${dev.id}_wire_can1p`) && clusterA.has(`${dev.id}_wire_can1n`));
+                console.log(dev.id, inAB);
+                if (inAB) processResistor(dev.currentResistance);
+            }
+            if (dev.type === 'calibrator' && (dev.sourceMode === 'SRC_RES' || dev.sourceMode === 'SRC_RTD')) {
+                let R = Infinity;
+
+                if (dev.sourceMode === 'SRC_RES') {
+                    R = dev.sourceValue;
+                } else if (dev.sourceMode === 'SRC_RTD') {
+                    R = dev._tempToRTDOhm(dev.sourceValue);
+                }
+                const inAB = (clusterA.has(`${dev.id}_wire_src_v`) && clusterB.has(`${dev.id}_wire_src_com`)) ||
+                    (clusterB.has(`${dev.id}_wire_src_v`) && clusterA.has(`${dev.id}_wire_src_com`));
+                if (inAB) processResistor(R);
             }
         });
 

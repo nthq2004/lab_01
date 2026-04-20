@@ -2,6 +2,7 @@ import { Workflow } from './tools/Workflow.js';  // 流程控制工具
 import { CircuitSolver } from './tools/CircuitSolver.js';  // 电路求解工具
 import { PneumaticSolver } from './tools/PneumaticSolver.js'; // 气路求解工具
 import { Show } from './tools/Show.js'; // 提示展示工具
+import { perfMonitor } from './tools/PerformanceMonitor.js'; // 性能监测工具
 
 import { LeakDetector } from './components/LeakDetector.js';
 import { AirBottle } from './components/AirBottle.js';
@@ -21,6 +22,8 @@ import { ElecValve } from './components/ElecValve.js';
 import { LVDTPressureSensor } from './components/LVDT.js';
 import { TempTransmitter } from './components/TempTransmitter.js';
 import { PressTransmitter } from './components/PressTransmitter.js';
+import { SmartPressTransmitter } from './components/SmartPressTransmitter.js';
+import { Rosemount475 } from './components/Rosemount475.js';
 
 import { VoltageTransmitter } from './components/VoltageTransmitter.js';
 import { DCPower } from './components/DCPower.js';
@@ -31,6 +34,7 @@ import { Multimeter } from './components/Multimeter.js';
 import { OpAmp } from './components/OpAmp.js';
 import { Ground } from './components/Gnd.js';
 import { Monitor } from './components/Monitor.js';
+import { ProcessCalibrator } from './components/ProcessCalibrator.js';
 
 import { Relay } from './components/Relay.js';
 import { ACPower } from './components/ACPower.js';
@@ -41,7 +45,7 @@ import { Capacitor } from './components/Capacitor.js';
 import { JFET } from './components/JFET.js';
 import { Diode } from './components/Diode.js';
 import { Transistor } from './components/Transistor.js';
-import { RealResistor} from './components/RealResistor.js';
+import { RealResistor } from './components/RealResistor.js';
 import { RealVariResistor } from './components/RealVariResistor.js';
 import { CoolingSystem } from './components/CoolingSystem.js';
 
@@ -127,20 +131,28 @@ export class ControlSystem {
         const offsetY = (window.innerHeight - baseHeight * scale) / 2;
 
         const componentConfigs = [
-            { Class: AIModule, id: 'ai', x: 50, y: 340 },
+            { Class: AIModule, id: 'ai', x: 250, y: 340 },
             // { Class: AOModule, id: 'ao', x: 550, y: 340 },
             // { Class: DIModule, id: 'di', x: 1000, y: 340 },
             // { Class: DOModule, id: 'do', x: 1450, y: 340 }, 
-            { Class: CentralComputer, id: 'cc', x: 650, y: 40 },   
-            { Class: BUSCON, id: 'can', x: 150, y: 1000 },                                                  
-             { Class: VariResistor, id: 'pt', x: 20, y: 240 },
-             { Class: RealResistor, id: 'r', x: 20, y: 440 },             
+            { Class: CentralComputer, id: 'cc', x: 650, y: 40 },
+            { Class: BUSCON, id: 'can', x: 650, y: 1000 },
+            { Class: TempTransmitter, id: 'temptr', x: 0, y: 360 },
+            { Class: VariResistor, id: 'pt', x: 20, y: 640 },
+            {
+                Class: SmartPressTransmitter, id: 'PT101', x: 200, y: 400,
+                min: 0, max: 100, unit: 'Mpa', tag: 'PT-101', damping: 0.5
+            },
+            // { Class: Rosemount475, id: 'HHT1', x: 500, y: 350 },
+            //  { Class: RealResistor, id: 'r', x: 20, y: 440 },             
             // { Class: Resistor, id: 'termr2', x: 1220, y: 340 },
-            { Class: DCPower, id: 'dcpower', x: 10, y: 10 },
-            { Class: Ground, id: 'gnd', x: 80, y: 300 },
+            // { Class: Oscilloscope_tri, id: 'osc3', x: 510, y: 10 },  
+            // { Class: SignalGenerator, id: 'sg', x: 510, y: 10 },                        
+            { Class: DCPower, id: 'dcpower', x: 310, y: 10 },
+            { Class: Ground, id: 'gnd', x: 380, y: 280 },
             { Class: Multimeter, id: 'multimeter', x: 1900, y: 30 },
-            { Class: AmpMeter, id: 'ampmeter', x: 20, y: 300 },
-            // { Class: Oscilloscope_tri, id: 'osc', x: 1280, y: 400 },
+            { Class: AmpMeter, id: 'ampmeter', x: 180, y: 200 },
+            { Class: ProcessCalibrator, id: 'cali', x: 600, y: 300 },
         ];
 
         const scaledConfigs = componentConfigs.map(cfg => ({
@@ -162,8 +174,10 @@ export class ControlSystem {
         this.voltageSolver = new CircuitSolver(this);
         this.pressSolver = new PneumaticSolver(this);
         this.showComp = new Show(this);
-        this.bus = new createCANSystem({cc:this.comps.cc,ai:this.comps.ai});
+        this.bus = new createCANSystem({ cc: this.comps.cc, ai: this.comps.ai });
         // this.bus = new createCANSystem({cc:this.comps.cc,ai:this.comps.ai,ao:this.comps.ao,di:this.comps.di,do:this.comps.do});
+
+        // perfMonitor.enabled = true;
 
         this._physicsTimer = setInterval(() => this._updatePhysics(), 1000 / 20);
         this._renderLoop();
@@ -332,11 +346,21 @@ export class ControlSystem {
 
     /**
      * 物理计算循环 (20fps，setInterval 保证计算频率)
+     * 优化：添加性能监测
      */
     _updatePhysics() {
         this._physicsIterCount++;
+
+        const startPhysics = performance.now();
+        perfMonitor.recordMetric('physicUpdate', performance.now() - startPhysics);
+
+        const startCircuit = performance.now();
         this.voltageSolver.update();
+        perfMonitor.recordMetric('circuitSolve', performance.now() - startCircuit);
+
+        const startPneumatic = performance.now();
         this.pressSolver.solve();
+        perfMonitor.recordMetric('pneumaticSolve', performance.now() - startPneumatic);
     }
 
     /**
@@ -353,14 +377,40 @@ export class ControlSystem {
     }
 
     /**
-     * 按需重绘循环 (RequestAnimationFrame，跟随浏览器 UI 刷新)
+     * 优化后的按需重绘循环 (RequestAnimationFrame)
+     * 改进措施：
+     * 1. 添加帧率上限 (60fps)
+     * 2. 分离管道/电路层的绘制
+     * 3. 智能判断是否需要真正绘制
+     * 4. 集成性能监测
      */
     _renderLoop() {
-        if (this._needsRedraw) {
+        const frameStart = performance.now();
+        const now = frameStart;
+
+        // 帧率上限：60fps (16.67ms per frame)
+        if (!this._lastFrameTime) this._lastFrameTime = now;
+        const deltaTime = now - this._lastFrameTime;
+
+        // 只在距离上次绘制 > 16ms 时才进行绘制
+        if (deltaTime >= 33 && this._needsRedraw) {
             this.layer.batchDraw();
             this.lineLayer.batchDraw();
             this._needsRedraw = false;
+            this._lastFrameTime = now;
+            perfMonitor.recordMetric('batchDraw', performance.now() - frameStart);
+        } else if (deltaTime >= 16 && !this._needsRedraw) {
+            // 即使无需重绘，也要每 100ms 检查一次仪表更新
+            if (deltaTime >= 100) {
+                this.layer.batchDraw();
+                this.lineLayer.batchDraw();
+                this._lastFrameTime = now;
+                perfMonitor.recordMetric('batchDraw', performance.now() - frameStart);
+            }
         }
+
+        const totalFrameTime = performance.now() - frameStart;
+        perfMonitor.recordMetric('renderLoop', totalFrameTime);
         requestAnimationFrame(() => this._renderLoop());
     }
 }

@@ -2,89 +2,85 @@
  * 气路物理求解器
  * 负责根据拓扑连接和设备状态，计算全场压力分布
  */
+
 export class PneumaticSolver {
     constructor(sys) {
-        this.sys = sys; // 持有系统引用，获取 comps 和 conns
+        this.sys = sys;
         this.terminalPressures = {};
-        // 缓存：拓扑指纹与上一次求解得到的压力快照
+        this.segmentFlows = {};       // 新增：每条 conn 的流量 { connKey: flowValue }
         this.topologyKey = null;
         this.cachedPressures = {};
-        // 压力比较容差
         this.pressureEps = 1e-4;
+
+        // 阻抗配置（可由外部覆盖）
+        this.impedance = {
+            pipe: 0.10,   // 管路固定10%压损系数（相对量，非绝对）
+            stopValve: 0.02,   // 截止阀全开阻抗
+            regulator: 0.05,   // 调压阀阻抗
+            tee: 0.01,   // 三通接头（近似零）
+            load: 1.00,   // 执行器/负载（主要消耗点）
+            leak: 0.005,  // 泄漏旁路（极低阻抗）
+        };
     }
 
-    /**
-     * 核心求解函数
-     * 返回所有端口的压力映射表 { portId: pressureValue }
-     */
     solve() {
+        // ── 压力场（原有逻辑保持不变）──
         const terminalPressures = {};
         const queue = [];
         const visitedPorts = new Set();
-
-        // 计算当前拓扑指纹（连线 + 关键设备开关状态）
         const currentTopologyKey = this._computeTopologyKey();
 
-        // 1. 初始化：将所有管路端口压力设为 0
         Object.values(this.sys.comps).forEach(device => {
             if (device.ports) {
                 device.ports.forEach(port => {
-                    if (port.type === 'pipe') {
-                        terminalPressures[port.id] = 0;
-                    }
+                    if (port.type === 'pipe') terminalPressures[port.id] = 0;
                 });
             }
         });
 
-        // 2. 识别气源：将所有主动产生压力的端口放入 BFS 队列
         Object.values(this.sys.comps).forEach(device => {
             if (device.type === 'airBottle') {
                 const outPortId = `${device.id}_pipe_o`;
-                // 气瓶内部压力作为起点
                 terminalPressures[outPortId] = device.pressure || 0;
                 queue.push(outPortId);
             }
             if (device.special === 'actuator') {
                 const outPortId = `${device.id}_pipe_o`;
-                // 电气阀门定位器的输出压力作为起点
                 terminalPressures[outPortId] = device.outPress || 0;
                 queue.push(outPortId);
             }
+            if(device.type ==='calibrator' && device.activePanel === 'SOURCE' && device.sourceMode === 'SRC_PRESSURE'){  
+                const outPortId = `${device.id}_pipe_o`;
+                terminalPressures[outPortId] = device.sourceValue /1000 || 0; // 压力校准器输出压力，单位转换为 MPa
+                queue.push(outPortId);
+            }   
         });
 
-        // 3. BFS 压力扩散
         while (queue.length > 0) {
             const currentPortId = queue.shift();
-            // 避免无限环路
             if (visitedPorts.has(currentPortId)) continue;
             visitedPorts.add(currentPortId);
-
             const currentP = terminalPressures[currentPortId];
 
-            // A. 通过外部连线扩散 (Wire/Pipe in Conns)
             this.sys.conns.forEach(conn => {
                 if (conn.type !== 'pipe') return;
-
                 let nextPortId = null;
                 if (conn.from === currentPortId) nextPortId = conn.to;
                 else if (conn.to === currentPortId) nextPortId = conn.from;
 
                 if (nextPortId) {
-                    // 管路连接视为等压（忽略长管压降）
                     terminalPressures[nextPortId] = currentP;
 
-                    // 如果该端口被标记为泄漏，则实际输入压力随机降低 10% ~ 30%
                     const compId = nextPortId.split('_')[0];
                     const comp = this.sys.comps[compId];
                     if (comp) {
                         const port = comp.ports.find(p => p.id === nextPortId);
                         if (port && port.node.getAttr('isLeaking')) {
-                            const lossRatio = 0.2 + Math.random() * 0.1; // 0.1 ~ 0.3
+                            const lossRatio = 0.2 + Math.random() * 0.1;
                             terminalPressures[nextPortId] = Math.max(0, currentP * (1 - lossRatio));
                         }
                     }
 
-                    // 查找该端口所属设备，进行内部扩散
                     const deviceId = this._getDeviceIdFromPort(nextPortId);
                     const device = this.sys.comps[deviceId];
                     if (device) {
@@ -95,65 +91,229 @@ export class PneumaticSolver {
         }
 
         this.terminalPressures = terminalPressures;
-        // 4. 扩散完成后：比较拓扑与压力快照，若无变化则直接返回，避免不必要的设备更新
+
         const pressuresChanged = this._pressuresChanged(this.cachedPressures, terminalPressures);
         const topologyChanged = currentTopologyKey !== this.topologyKey;
+        if (!topologyChanged && !pressuresChanged) return;
 
-        if (!topologyChanged && !pressuresChanged) {
-            // 无变化：保持缓存并跳过后续更新逻辑
-            this.terminalPressures = terminalPressures;
-            return;
-        }
-
-        // 有变化：更新缓存并继续正常的设备同步逻辑
         this.topologyKey = currentTopologyKey;
         this.cachedPressures = Object.assign({}, terminalPressures);
 
-        // 5. 扩散完成后，强制同步所有压力感应设备的状态
-        // 这样做可以确保那些因为连线断开而无法被 BFS 触达的设备，能正确接收到 0 压力信号
-        const targetTypes = ['relay', 'pressSwitch', 'pressMeter', 'regulator', 'pressure_sensor', 'pressure_transducer'];
+        // ── 新增：流量场求解 ──
+        this._solveFlows(terminalPressures);
+
+        // ── 设备状态同步（原有逻辑，增加 flow 注入）──
+        this._syncDevices();
+    }
+
+    /**
+     * 流量场求解
+     * 遍历所有 pipe 类型连线，用两端压差和等效阻抗计算流量
+     */
+    _solveFlows(pressures) {
+        const flows = {};
+
+        this.sys.conns.forEach((conn, idx) => {
+            if (conn.type !== 'pipe') return;
+
+            const pFrom = pressures[conn.from] || 0;
+            const pTo = pressures[conn.to] || 0;
+            const deltaP = pFrom - pTo;
+
+            // 计算该管段的等效阻抗
+            const R = this._getSegmentImpedance(conn, pressures);
+
+            // Q = ΔP / R，阻抗为0时流量为0（避免除零）
+            const Q = (R > 0 && deltaP > 0) ? deltaP / R : 0;
+
+            const key = this._connKey(conn);
+            flows[key] = {
+                Q,
+                from: conn.from,
+                to: conn.to,
+                deltaP,
+                R,
+            };
+        });
+
+        // 三通节点：汇总流量守恒校验（可选，用于调试）
+        this._balanceTeeFlows(flows, pressures);
+
+        this.segmentFlows = flows;
+    }
+
+    /**
+     * 获取某条管路连线的等效阻抗
+     * 阻抗 = 管路固定损耗 + 目标端设备附加阻抗
+     */
+    _getSegmentImpedance(conn, pressures) {
+        const R = this.impedance;
+        let totalR = 0;
+
+        // 管路自身固定损耗（10% 压损系数，转换为阻抗）
+        // 用起点压力归一化：R_pipe = pipeLoss * P_source
+        const pSource = pressures[conn.from] || 0;
+        totalR += R.pipe * pSource;  // 等效为绝对阻抗
+
+        // 目标端设备类型附加阻抗
+        const toDeviceId = this._getDeviceIdFromPort(conn.to);
+        const toDevice = this.sys.comps[toDeviceId];
+
+        if (toDevice) {
+            switch (toDevice.type) {
+                case 'stopValve':
+                    totalR += toDevice.isOpen ? R.stopValve * pSource : Infinity;
+                    break;
+                case 'regulator':
+                    totalR += R.regulator * pSource;
+                    break;
+                case 'teeConnector':
+                    totalR += R.tee * pSource;
+                    break;
+                default:
+                    // special === 'actuator' 或其他终端负载
+                    if (toDevice.special === 'actuator' || toDevice.special === 'press') {
+                        totalR += R.load * pSource;
+                    }
+                    // 泄漏端口：附加极小阻抗（已在压力层处理过）
+                    const port = toDevice.ports?.find(p => p.id === conn.to);
+                    if (port?.node?.getAttr('isLeaking')) {
+                        totalR = Math.min(totalR, R.leak * pSource);
+                    }
+                    break;
+            }
+        }
+
+        return totalR > 0 ? totalR : 1e-6; // 防止除零
+    }
+
+    /**
+     * 三通节点流量平衡：将入口流量按下游各支路压差比例分配
+     * 修正 segmentFlows 中各出口的 Q 值
+     */
+    _balanceTeeFlows(flows, pressures) {
+        Object.values(this.sys.comps).forEach(device => {
+            if (device.type !== 'teeConnector') return;
+
+            // 找出所有连接到该三通的管路
+            const inConns = [];
+            const outConns = [];
+
+            this.sys.conns.forEach(conn => {
+                if (conn.type !== 'pipe') return;
+                const toId = this._getDeviceIdFromPort(conn.to);
+                const fromId = this._getDeviceIdFromPort(conn.from);
+                if (toId === device.id) inConns.push(conn);
+                if (fromId === device.id) outConns.push(conn);
+            });
+
+            if (inConns.length === 0 || outConns.length === 0) return;
+
+            // 总入口流量
+            const Q_in = inConns.reduce((sum, c) => sum + (flows[this._connKey(c)]?.Q || 0), 0);
+
+            // 各出口压差权重
+            const teeP = pressures[`${device.id}_pipe_o`] ||
+                pressures[`${device.id}_pipe_1`] ||
+                device.ports?.reduce((max, p) => Math.max(max, pressures[p.id] || 0), 0) || 0;
+
+            const weights = outConns.map(c => {
+                const pDown = pressures[c.to] || 0;
+                return Math.max(0, teeP - pDown);
+            });
+
+            const totalWeight = weights.reduce((a, b) => a + b, 0);
+
+            // 按权重分配流量
+            outConns.forEach((c, i) => {
+                const key = this._connKey(c);
+                if (flows[key] && totalWeight > 0) {
+                    flows[key].Q = Q_in * (weights[i] / totalWeight);
+                }
+            });
+        });
+    }
+
+    /**
+     * 设备状态同步（原有逻辑提取为独立方法 + 注入流量）
+     */
+    _syncDevices() {
+        const pressures = this.terminalPressures;
+        const flows = this.segmentFlows;
+
+        // 辅助：查询某个端口上的流量（取相关管路的 Q）
+        const getPortFlow = (portId) => {
+            for (const [, seg] of Object.entries(flows)) {
+                if (seg.from === portId || seg.to === portId) return seg.Q;
+            }
+            return 0;
+        };
+
+        const targetTypes = ['relay', 'pressSwitch', 'pressMeter', 'regulator',
+            'pressure_sensor', 'pressure_transducer'];
 
         Object.values(this.sys.comps).forEach(device => {
             if (targetTypes.includes(device.type)) {
-                // 获取当前求解器中该设备输入端口的压力，如果 BFS 没扫到，则默认为 0
                 const inPortId = `${device.id}_pipe_i`;
-                const currentP = this.terminalPressures[inPortId] || 0;
+                const currentP = pressures[inPortId] || 0;
 
                 if (device.update) {
-                    // 特殊处理：调压阀（pressRegulator）可能需要保存输入压力用于内部逻辑
                     if (device.type === 'regulator') {
                         device.inputPressure = currentP;
                         device.update();
                     } else {
-                        // 执行设备逻辑更新（如仪表盘指针旋转、压力继电器开关动作等）
                         device.update(currentP);
                     }
-
-
                 }
-            } else if (device.special === 'press') {
-                const inPortId = `${device.id}_pipe_i`;
-                device.press = this.terminalPressures[inPortId] || 0;
-
             }
+
+            // 流量传感器 / 变送器：注入流量值
+            else if (device.type === 'flow_sensor' || device.type === 'flow_transmitter') {
+                const inPortId = `${device.id}_pipe_i`;
+                const Q = getPortFlow(inPortId);
+                device.flow = Q;
+                if (device.update) device.update(pressures[inPortId] || 0, Q);
+            }
+
+            else if (device.special === 'press') {
+                const inPortId = `${device.id}_pipe_i`;
+                device.press = pressures[inPortId] || 0;
+                device.flow = getPortFlow(inPortId);  // 附加流量
+            }
+
             else if (device.type === 'stopValve') {
                 const inPortId = `${device.id}_pipe_i`;
-                const currentP = this.terminalPressures[inPortId] || 0;
+                const currentP = pressures[inPortId] || 0;
                 if (currentP > 0 && device.isOpen === true) {
                     this.sys.comps['cab'].isConsuming = true;
                 } else {
                     this.sys.comps['cab'].isConsuming = false;
                 }
-            } else if (device.special === 'diff') {
+            }
+
+            else if (device.special === 'diff') {
                 const pH = `${device.id}_pipe_h`;
                 const pL = `${device.id}_pipe_l`;
-                device.press = this.terminalPressures[pH] - this.terminalPressures[pL];
-            } else if (device.special === 'actuator') {
+                device.press = pressures[pH] - pressures[pL];
+            }
+            else if (device.type === 'calibrator') {
+                if(device.upMode === 'MEAS_PRESSURE'){
+                    const pIn = `${device.id}_pipe_i`;
+                    device.upPressureValue = pressures[pIn]*1000 || 0;   
+                }
+                if(device.activePanel === 'MEASURE' && device.sourceMode === 'MEAS_PRESSURE'){
+                    const pIn = `${device.id}_pipe_o`;
+                    device.downPressureValue = (pressures[pIn] || 0) * 1000; // 从 MPa 转回 kPa
+                }
+            }
+            else if (device.special === 'actuator') {
                 const pS = `${device.id}_pipe_s`;
                 const pIn = `${device.id}_pipe_i`;
-                device.sourcePress = this.terminalPressures[pS];
-                device.inPress = this.terminalPressures[pIn];
-            } else if (device.type === '3valve') {
+                device.sourcePress = pressures[pS];
+                device.inPress = pressures[pIn];
+                device.flow = getPortFlow(pIn);
+            }
+            else if (device.type === '3valve') {
                 if (device.vE === true) {
                     const pInH = this.terminalPressures[`${device.id}_pipe_inh`];
                     const pInL = this.terminalPressures[`${device.id}_pipe_inl`];
@@ -191,6 +351,10 @@ export class PneumaticSolver {
         });
     }
 
+    /** 生成连线唯一键 */
+    _connKey(conn) {
+        return `${conn.from}=>${conn.to}`;
+    }
 
     /**
      * 处理压力在设备内部从输入端到输出端的转换
@@ -267,7 +431,6 @@ export class PneumaticSolver {
     }
 
     _getDeviceIdFromPort(portId) {
-        // 假设 ID 格式为 "CompID_pipe_Label"
         return portId.split('_pipe_')[0];
     }
 
@@ -284,7 +447,11 @@ export class PneumaticSolver {
             } else if (dev.type === '3valve') {
                 parts.push(`${dev.id}:3valve:e=${!!dev.vE},h=${!!dev.vH},l=${!!dev.vL}`);
             } else if (dev.type === 'airCompressor') {
-                parts.push(`${dev.id}:compressor:run=${!!dev.running}`);
+                parts.push(`${dev.id}:compressor:state=${!!dev.running},p=${dev.pressure || 0}`);
+            }else if (dev.type === 'regulator') {
+                parts.push(`${dev.id}:regulator:setP=${dev.setPressure || 0}`);
+            }else if (dev.type === 'calibrator') {
+                parts.push(`${dev.id}:calibrator:activePanel=${dev.activePanel},sourceMode=${dev.sourceMode},sourceValue=${dev.sourceValue}`);
             }
         });
 
