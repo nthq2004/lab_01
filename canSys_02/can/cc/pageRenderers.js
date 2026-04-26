@@ -36,20 +36,20 @@ export function renderParamPage(cc) {
 
     // AI
     chKeys.forEach((id, i) => {
-        const d = cc.data.ai[id]; if (!d ) return;
+        const d = cc.data.ai[id]; if (!d) return;
         const r = cc._paramDisplays.ai[i];
-        
+
         // 检查是否超时（hold 标志）
         const isTimeout = d.hold === true;
         const isAvailable = aiOnline && !isTimeout;
-        
+
         if (!isAvailable) {
             r.val.text('---');
             r.val.fill(C.textDim);
             r.bar.width(0);
             return;
         }
-        
+
         const c = d.fault ? C.red : (d.alarm !== 'normal' ? C.yellow : C.green);
         r.val.text(d.fault ? `${d.faultText}` : `${d.value.toFixed(2)} ${d.unit}`);
         r.val.fill(c);
@@ -76,14 +76,14 @@ export function renderParamPage(cc) {
     chKeys.forEach((id, i) => {
         const d = cc.data.ao[id]; if (!d) return;
         const r = cc._paramDisplays.ao[i];
-        
+
         if (!aoOnline) {
             r.val.text('---');
             r.val.fill(C.textDim);
             r.bar.width(0);
             return;
         }
-        
+
         r.val.text(d.fault ? 'FAULT' : `${(d.percent ?? 0).toFixed(1)}%`);
         r.val.fill(d.fault ? C.red : (d.percent > 0 ? C.orange : C.textDim));
         r.bar.width(Math.round((d.percent ?? 0) / 100 * r.maxBarW));
@@ -94,14 +94,14 @@ export function renderParamPage(cc) {
     chKeys.forEach((id, i) => {
         const d = cc.data.di[id]; if (!d) return;
         const r = cc._paramDisplays.di[i];
-        
+
         if (!diOnline) {
             r.val.text('---');
             r.val.fill(C.textDim);
             r.bar.width(0);
             return;
         }
-        
+
         r.val.text(d.fault ? 'FAULT' : (d.state ? ' ON ' : 'OFF'));
         r.val.fill(d.fault ? C.red : (d.state ? C.green : C.textDim));
         r.bar.width(d.state ? r.maxBarW : 0);
@@ -112,14 +112,14 @@ export function renderParamPage(cc) {
     chKeys.forEach((id, i) => {
         const d = cc.data.do[id]; if (!d) return;
         const r = cc._paramDisplays['do_'][i];
-        
+
         if (!doOnline) {
             r.val.text('---');
             r.val.fill(C.textDim);
             r.bar.width(0);
             return;
         }
-        
+
         r.val.text(d.fault ? 'FAULT' : (d.state ? ' ON ' : 'OFF'));
         r.val.fill(d.fault ? C.red : (d.state ? C.purple : C.textDim));
         r.bar.width(d.state ? r.maxBarW : 0);
@@ -172,20 +172,20 @@ export function renderAISetPage(cc) {
     if (!cc._aiRows) return;
     const bus = cc.sys?.canBus;
     const aiOnline = bus ? bus.isNodeOnline('ai') : false;
-    
+
     ['ch1', 'ch2', 'ch3', 'ch4'].forEach(id => {
         const row = cc._aiRows[id];
         const d = cc.data.ai[id];
         if (!row || !d) return;
-        
+
         // 检查是否超时（hold 标志）
         const isTimeout = d.hold === true;
         const isAvailable = aiOnline && !isTimeout;
-        
+
         if (!isAvailable) {
             row.valDisplay.text('---');
             row.valDisplay.fill(C.textDim);
-            
+
             // 禁用模式切换按钮
             if (row.modeBg) {
                 row.modeBg.fill(C.textDim + '33');
@@ -194,12 +194,12 @@ export function renderAISetPage(cc) {
             if (row.modeTxt) {
                 row.modeTxt.fill(C.textDim);
             }
-            
+
             // 禁用量程编辑
             if (row.urvText) row.urvText.fill(C.textDim);
             if (row.lrvText) row.lrvText.fill(C.textDim);
             if (row.unitText) row.unitText.fill(C.textDim);
-            
+
             // 禁用报警编辑
             if (row.hhText) row.hhText.fill(C.textDim);
             if (row.hText) row.hText.fill(C.textDim);
@@ -208,7 +208,7 @@ export function renderAISetPage(cc) {
         } else {
             row.valDisplay.text(d.fault ? `${d.faultText}` : `${d.value.toFixed(2)} ${d.unit}`);
             row.valDisplay.fill(d.fault ? C.red : C.green);
-            
+
             // 启用模式切换按钮
             if (row.modeBg) {
                 row.modeBg.fill('#e2e6f4');
@@ -218,12 +218,12 @@ export function renderAISetPage(cc) {
                 const mode = d.mode || 'normal';
                 row.modeTxt.fill(mode === 'normal' ? C.green : mode === 'test' ? C.orange : C.textDim);
             }
-            
+
             // 启用量程编辑
             if (row.urvText) row.urvText.fill(C.textDim);
             if (row.lrvText) row.lrvText.fill(C.textDim);
             if (row.unitText) row.unitText.fill(C.textDim);
-            
+
             // 启用报警编辑
             if (row.hhText) row.hhText.fill(C.textDim);
             if (row.hText) row.hText.fill(C.textDim);
@@ -237,19 +237,59 @@ export function renderAISetPage(cc) {
 export function renderAOPage(cc) {
     const bus = cc.sys?.canBus;
     const aoOnline = bus ? bus.isNodeOnline('ao') : false;
-    
+    const ao = cc.sys.comps['ao'];
+
     ['ch1', 'ch2', 'ch3', 'ch4'].forEach(id => {
         const d = cc.data.ao[id];
         const row = cc._aoRows[id];
         if (!d || !row) return;
-        
+
         if (!aoOnline) {
-            row.curVal.text('---');
+            row.curVal.text('工程值：---');
             row.curVal.fill(C.textDim);
+            row.modeTxt.text('mode: --');
+            row.modeTxt.fill(C.textDim);
+            row.lrvText.text('LRV: --');
+            row.urvText.text('URV: --');
+            row.safeModeText.text('Safe: --');
+            row.safeModeText.fill(C.textDim);
+            row.safePresetText.text('');
+            row.safePresetText.fill(C.textDim);
         } else {
             const isMa = d.type === '4-20mA';
-            row.curVal.text(d.fault ? 'FAULT' : `${(d.percent ?? 0).toFixed(1)}%  /  ${isMa ? `${(d.actual ?? 4).toFixed(2)} mA` : `${(d.actual ?? 0).toFixed(0)}% PWM`}`);
+            row.curVal.text(d.fault ? 'FAULT' : `工程值： ${isMa ? `${(d.actual ?? 4).toFixed(2)} mA` : `${(d.actual ?? 0).toFixed(0)}% PWM`}`);
             row.curVal.fill(d.fault ? C.red : C.text);
+
+            // 更新模式显示
+            if (ao && ao.channels && ao.channels[id]) {
+                const mode = ao.channels[id].mode || 'disable';
+                row.modeTxt.text(`Mode: ${mode}`);
+                row.modeTxt.fill(mode === 'hand' ? C.yellow : mode === 'auto' ? C.green : C.textDim);
+            }
+
+            // 更新 LRV/URV 显示
+            if (ao && ao.ranges && ao.ranges[id]) {
+                const rng = ao.ranges[id];
+                row.lrvText.text(`LRV: ${rng.lrv}%`);
+                row.urvText.text(`URV: ${rng.urv}%`);
+            }
+
+            // 更新安全输出配置显示（分别显示模式和预设值）
+            if (d.safeOutput) {
+                const { mode, presetPercent } = d.safeOutput;
+                row.safeModeText.text(`Safe: ${mode}`);
+                row.safeModeText.fill(C.textDim);
+                // 仅 preset 模式显示预设值
+                row.safePresetText.text(mode === 'preset' ? `[${presetPercent}%]` : '');
+                row.safePresetText.fill(C.textDim);
+            } else if (ao && ao.safeOutput && ao.safeOutput[id]) {
+                const { mode, presetPercent } = ao.safeOutput[id];
+                row.safeModeText.text(`Safe: ${mode}`);
+                row.safeModeText.fill(C.textDim);
+                // 仅 preset 模式显示预设值
+                row.safePresetText.text(mode === 'preset' ? `[${presetPercent}%]` : '');
+                row.safePresetText.fill(C.textDim);
+            }
         }
     });
 }
@@ -259,20 +299,39 @@ export function renderDISetPage(cc) {
     if (!cc._diRows) return;
     const bus = cc.sys?.canBus;
     const diOnline = bus ? bus.isNodeOnline('di') : false;
-    
+    const triggerMap = { 'ON': '闭合报警', 'OFF': '断开报警', 'NONE': '不报警' };
+    const triggerColors = { 'ON': C.red, 'OFF': C.orange, 'NONE': C.textDim };
+
     ['ch1', 'ch2', 'ch3', 'ch4'].forEach(id => {
         const d = cc.data.di[id];
         const row = cc._diRows[id];
         if (!d || !row) return;
-        
+
         if (!diOnline) {
             row.stateDisp.text('---');
             row.stateDisp.fill(C.textDim);
             row.counterDisp.text('---');
+            if (row.alarmBtn) {
+                row.alarmBtn.findOne('Rect').fill(C.textDim + '22');
+                row.alarmBtn.findOne('Rect').stroke(C.textDim);
+                row.alarmBtn.findOne('Text').text('--');
+                row.alarmBtn.findOne('Text').fill(C.textDim);
+            }
         } else {
             row.stateDisp.text(d.fault ? 'FAULT' : (d.state ? ' ON ' : 'OFF'));
             row.stateDisp.fill(d.fault ? C.red : (d.state ? C.green : C.textDim));
             row.counterDisp.text(String(d.counter || 0));
+
+            // 更新报警按钮显示
+            if (row.alarmBtn) {
+                const trigger = d.trigger || 'OFF';
+                const btnText = triggerMap[trigger];
+                const btnColor = triggerColors[trigger];
+                row.alarmBtn.findOne('Rect').fill(btnColor + '33');
+                row.alarmBtn.findOne('Rect').stroke(btnColor);
+                row.alarmBtn.findOne('Text').text(btnText);
+                row.alarmBtn.findOne('Text').fill(btnColor);
+            }
         }
     });
 }
@@ -281,22 +340,76 @@ export function renderDISetPage(cc) {
 export function renderDOPage(cc) {
     const bus = cc.sys?.canBus;
     const doOnline = bus ? bus.isNodeOnline('do') : false;
-    
+    const doMod = cc.sys?.comps?.['do'];
+
+    const MODE_LABELS = { hand: '手  动', auto: '自  动', pulse: '脉冲模式', disable: '禁  用' };
+    const MODE_COLORS = { hand: C.yellow, auto: C.green, pulse: C.cyan, disable: C.textDim };
+    const SAFE_COLORS = { off: C.textDim, hold: C.yellow, preset: C.orange };
+
     ['ch1', 'ch2', 'ch3', 'ch4'].forEach(id => {
         const d = cc.data.do[id];
-        const row = cc._doRows[id];
+        const row = cc._doRows?.[id];
         if (!d || !row) return;
-        
+        if (d.mode === 'disable') return;
+
         if (!doOnline) {
             row.stateDisp.text('---');
             row.stateDisp.fill(C.textDim);
-            row.infoText.text('---');
-            row.infoText.fill(C.textDim);
-        } else {
-            row.stateDisp.text(d.fault ? 'FAULT' : (d.state ? ' ON ' : 'OFF'));
-            row.stateDisp.fill(d.fault ? C.red : (d.state ? C.purple : C.textDim));
-            row.infoText.text(d.hold ? '⚠ 通信超时，已进入安全保持' : (cc.doManual[id] ? '手动控制模式' : '自动控制模式'));
-            row.infoText.fill(d.hold ? C.yellow : C.textDim);
+            row.modeBtn?.findOne('Text')?.fill(C.textDim);
+            row.forceBtn?.opacity(0.35);
+            row.pulseBtn?.opacity(0.35);
+            row.presetBtn?.visible(false);
+            return;
+        }
+
+        // ── 状态显示 ──
+        row.stateDisp.text(d.fault ? 'FAULT' : (d.state ? ' ON ' : 'OFF'));
+        row.stateDisp.fill(d.fault ? C.red : (d.state ? C.purple : C.textDim));
+
+        // ── 模式按钮 ──
+        const mode = d.mode || doMod?.channels?.[id]?.mode || 'hand';
+        const mc = MODE_COLORS[mode] || C.textDim;
+        if (row.modeBtn) {
+            row.modeBtn.findOne('Rect').fill(mc + '33');
+            row.modeBtn.findOne('Rect').stroke(mc);
+            row.modeBtn.findOne('Text').text(MODE_LABELS[mode] || mode);
+            row.modeBtn.findOne('Text').fill(mc);
+        }
+
+        // ── 强制按钮激活 ──
+        row.forceBtn?.opacity(mode === 'hand' ? 1 : 0.35);
+
+        // ── 脉冲按钮激活 & 文本 ──
+        row.pulseBtn?.opacity(mode === 'pulse' ? 1 : 0.35);
+        if (mode === 'pulse' && row.pulseBtn) {
+            const pc = doMod?.pulseConfig?.[id] || d.pulse || {};
+            const onMs = pc.onMs ?? 500;
+            const offMs = pc.offMs ?? 500;
+            const phMs = pc.phaseStart
+                ?? 0;
+            row.pulseBtn.findOne('Text').text(`${onMs}  ${offMs}  ${phMs}`);
+        }
+
+        // ── 安全输出按钮 ──
+        const safeMode = d.safeMode || doMod?.safeOutput?.[id]?.mode || 'off';
+        const sc = SAFE_COLORS[safeMode] || C.textDim;
+        if (row.safeBtn) {
+            row.safeBtn.findOne('Rect').fill(sc + '33');
+            row.safeBtn.findOne('Rect').stroke(sc);
+            row.safeBtn.findOne('Text').text(`Safe: ${safeMode}`);
+            row.safeBtn.findOne('Text').fill(sc);
+        }
+
+        // ── preset 按钮 ──
+        if (row.presetBtn) {
+            row.presetBtn.visible(safeMode === 'preset');
+            if (safeMode === 'preset') {
+                const ps = d.presetState ?? doMod?.safeOutput?.[id]?.presetState ?? false;
+                row.presetBtn.findOne('Text').text(ps ? '预设:  ON' : '预设: OFF');
+                row.presetBtn.findOne('Rect').fill(ps ? C.orange + '33' : C.textDim + '22');
+                row.presetBtn.findOne('Rect').stroke(ps ? C.orange : C.textDim);
+                row.presetBtn.findOne('Text').fill(ps ? C.orange : C.textDim);
+            }
         }
     });
 }
@@ -315,18 +428,34 @@ export function renderLevelPage(cc) {
     cc._lvText.text(`${lc.level.toFixed(1)}%`);
 
     cc._inletFlowBar.width(lc.inletOn ? 32 : 0);
-    cc._drainFlowBar.width(lc.drainOn ? 32 : 0);
+    cc._drainFlowBar.width(32);
 
-    cc._pumpText.text(`进水阀:  ${lc.inletOn ? 'ON ●' : 'OFF ○'}`);
+    cc._pumpText.text(`进水泵:  ${lc.inletOn ? 'ON ●' : 'OFF ○'}`);
     cc._pumpText.fill(lc.inletOn ? C.blue : C.textDim);
-    cc._drainText.text(`排水泵:  ${lc.drainOn ? 'ON ●' : 'OFF ○'}`);
-    cc._drainText.fill(lc.drainOn ? C.orange : C.textDim);
 
     if (lc.level >= lc.setHH) { cc._lvAlarmText.text('⚠ HH 高高液位报警'); cc._lvAlarmText.fill(C.red); }
     else if (lc.level <= lc.setLL) { cc._lvAlarmText.text('⚠ LL 低低液位报警'); cc._lvAlarmText.fill(C.red); }
     else if (lc.level >= lc.setH) { cc._lvAlarmText.text('△ H  高液位'); cc._lvAlarmText.fill(C.yellow); }
     else if (lc.level <= lc.setL) { cc._lvAlarmText.text('△ L  低液位'); cc._lvAlarmText.fill(C.yellow); }
     else { cc._lvAlarmText.text('● 液位正常'); cc._lvAlarmText.fill(C.green); }
+
+    const r = cc.levelCtrl.simMode;
+    cc._simBtn.findOne('Rect').fill(r ? C.cyan + '33' : C.textDim + '22');
+    cc._simBtn.findOne('Rect').stroke(r ? C.cyan : C.textDim);
+    cc._simBtn.findOne('Text').text(r ? '控制:自动' : '控制:手动');
+    cc._simBtn.findOne('Text').fill(r ? C.cyan : C.textDim);
+
+    const p = cc.levelCtrl.inletOn;
+    cc._pumpBtn.findOne('Rect').fill(p ? C.blue + '33' : C.textDim + '22');
+    cc._pumpBtn.findOne('Rect').stroke(p ? C.blue : C.textDim);
+    cc._pumpBtn.findOne('Text').text(p ? '进水泵:运行' : '进水泵:停止');
+    cc._pumpBtn.findOne('Text').fill(p ? C.blue : C.textDim);
+    
+    const s = cc.levelCtrl.switchOn;
+    cc._switchBtn.findOne('Rect').fill(s ? C.orange + '33' : C.textDim + '22');
+    cc._switchBtn.findOne('Rect').stroke(s ? C.orange : C.textDim);
+    cc._switchBtn.findOne('Text').text(s ? '液位开关:闭合' : '液位开关:断开');
+    cc._switchBtn.findOne('Text').fill(s ? C.orange : C.textDim);
 
     if (cc._levelTrendHistory.length > 1) {
         const m = cc._lvTrendMeta, pts = [];

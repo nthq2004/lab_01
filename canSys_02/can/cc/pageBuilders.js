@@ -21,16 +21,16 @@ import { CANId, CAN_FUNC } from '../CANBUS.js';
 function isModuleAvailable(cc, moduleId) {
     const bus = cc.sys?.canBus;
     const isOnline = bus ? bus.isNodeOnline(moduleId) : false;
-    
+
     // 检查该模块的所有通道是否有 hold 标志（超时标记）
     const dataKey = moduleId === 'ai' ? 'ai' : moduleId === 'ao' ? 'ao' : moduleId === 'di' ? 'di' : 'do';
     const moduleData = cc.data?.[dataKey];
-    
+
     if (!moduleData) return isOnline;
-    
+
     // 如果任何通道被标记为 hold（超时），则认为模块不可用
     const hasTimeout = Object.values(moduleData).some(ch => ch?.hold === true);
-    
+
     return isOnline && !hasTimeout;
 }
 
@@ -105,7 +105,7 @@ export function buildParamPage(cc) {
             ai: ['CH1 4-20mA', 'CH2 4-20mA', 'CH3 RTD  ', 'CH4 TC   '],
             ao: ['CH1 4-20mA', 'CH2 4-20mA', 'CH3 PWM  ', 'CH4 PWM  '],
             di: ['CH1 干接点 ', 'CH2 干接点 ', 'CH3 湿接点', 'CH4 湿接点'],
-            do_: ['CH1 继电器 ', 'CH2 继电器 ', 'CH3 24VNPN', 'CH4 24VNPN'],
+            do_: ['CH1 继电器 ', 'CH2 继电器 ', 'CH3 24VPNP', 'CH4 24VPNP'],
         };
         // b.key就是 ‘ai','ao','di','do_'这4个。
         const lbls = chLabels[b.key];
@@ -251,7 +251,7 @@ export function buildAISetPage(cc) {
         const modeTxt = new Konva.Text({ width: 100, height: 20, text: 'mode: --', align: 'center', verticalAlign: 'middle', fontSize: 11, fontFamily: 'Courier New', fill: C.textDim });
         modeGrp.add(modeBg, modeTxt);
         pg.add(modeGrp);
-        
+
         // 鼠标进入/离开效果
         modeGrp.on('mouseenter', () => {
             if (isModuleAvailable(cc, 'ai')) {
@@ -263,11 +263,11 @@ export function buildAISetPage(cc) {
             modeGrp.getStage().container().style.cursor = 'default';
             modeBg.fill(isModuleAvailable(cc, 'ai') ? '#e2e6f4' : C.textDim + '33');
         });
-        
+
         modeGrp.on('click tap', () => {
             // 检查 AI 模块是否在线且无超时
             if (!isModuleAvailable(cc, 'ai')) return; // 模块离线或超时，禁用按钮
-            
+
             const ai = cc.sys.comps['ai'];
             if (!ai || !cc.sys || !cc.sys.canBus) return;
             const cur = (ai.channels && ai.channels[ch.id] && ai.channels[ch.id].mode) || 'normal';
@@ -321,7 +321,7 @@ export function buildAISetPage(cc) {
             if (!isModuleAvailable(cc, 'ai')) return; // 模块离线或超时，禁止修改
             cc._openRangeEditor(ch.id, { urvText, lrvText, unitText });
         });
-        
+
         // 量程编辑文本的鼠标效果
         [urvText, lrvText, unitText].forEach(txt => {
             txt.on('mouseenter', () => {
@@ -337,7 +337,7 @@ export function buildAISetPage(cc) {
                 txt.fill(C.textDim);
             });
         });
-        
+
         // 报警编辑文本的鼠标效果
         [hhText, hText, lText, llText].forEach(txt => {
             txt.on('mouseenter', () => {
@@ -416,31 +416,197 @@ export function buildAOPage(cc) {
     ];
 
     cc._aoRows = {};
-    const sliderTrackW = pw - 80;
+    const sliderTrackW = 400;
 
     chDefs.forEach((ch, i) => {
-        const y = 24 + i * 70;
-        pg.add(new Konva.Rect({ x: 6, y, width: pw - 12, height: 64, fill: C.bg, stroke: C.border, strokeWidth: 1, cornerRadius: 2 }));
-        pg.add(new Konva.Text({ x: 14, y: y + 6, text: `${ch.label}  [${ch.type}]`, fontSize: 10, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.orange }));
+        const y = 24 + i * 100;  // 增加行间距为 120px 以容纳安全输出配置
+        pg.add(new Konva.Rect({ x: 6, y, width: pw - 12, height: 95, fill: C.bg, stroke: C.border, strokeWidth: 1, cornerRadius: 2 }));
+        pg.add(new Konva.Text({ x: 14, y: y + 6, text: `${ch.label}  [${ch.type}]`, fontSize: 12, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.orange }));
 
-        const curVal = new Konva.Text({ x: 14, y: y + 22, text: '0.0%  /  4.00mA', fontSize: 9, fontFamily: 'Courier New', fill: C.text });
+        const curVal = new Konva.Text({ x: 14, y: y + 66, text: '工程值：4.00mA', fontSize: 12, fontFamily: 'Courier New', fill: C.text });
         pg.add(curVal);
 
-        // 自动/手动切换
-        const modeBtn = mkToggle(pg, '自  动', pw - 100, y + 4, 80, 22, false, C.green);
-        const sliderGrp = new Konva.Group({ x: 14, y: y + 44, opacity: 0.3 });
-        modeBtn.on('click tap', () => {
-            cc.aoManual[ch.id] = !cc.aoManual[ch.id];
-            const isM = cc.aoManual[ch.id];
-            modeBtn.findOne('Rect').fill(isM ? C.yellow + '33' : C.green + '22');
-            modeBtn.findOne('Rect').stroke(isM ? C.yellow : C.green);
-            modeBtn.findOne('Text').text(isM ? '手  动' : '自  动');
-            modeBtn.findOne('Text').fill(isM ? C.yellow : C.green);
-            sliderGrp.opacity(isM ? 1 : 0.3);
+        // ── 三模式开关：hand / auto / disable ──
+        const modeGrp = new Konva.Group({ x: 0.6 * pw, y: y + 4 });
+        const modeBg = new Konva.Rect({ width: 100, height: 20, fill: '#e2e6f4', stroke: C.border, strokeWidth: 1, cornerRadius: 4 });
+        const modeTxt = new Konva.Text({ width: 100, height: 20, text: 'mode: disable', align: 'center', verticalAlign: 'middle', fontSize: 12, fontFamily: 'Courier New', fill: C.textDim });
+        modeGrp.add(modeBg, modeTxt);
+        pg.add(modeGrp);
+        const applyVal = (clamped) => {
+            const pct = Math.round((clamped / sliderTrackW) * 100);
+            cc.aoManualVal[ch.id] = pct;
+            thumb.x(clamped);
+            fillRect.width(clamped);
+            valLabel.text(`${pct}%`);
+
+            // 通过 CAN 总线发送输出指令（而不是直接调用 setOutput）
+            // 只发送当前通道的值，其他通道保持 0xFFFF（Hold）
+            const pctInt = Math.round(pct * 10);  // 百分比 × 100
+            const chIdx = i;  // ch1=0, ch2=1, ch3=2, ch4=3
+
+            // 初始化所有通道为 Hold（0xFFFF）
+            const data = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+
+            // 仅设置当前通道
+            const bytePos = chIdx * 2;
+            data[bytePos] = (pctInt >> 8) & 0xFF;
+            data[bytePos + 1] = pctInt & 0xFF;
+
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.AO_CMD, 2),  // 节点地址 2（AO模块）
+                    extended: false, rtr: false, dlc: 8, data,
+                    sender: cc.id, timestamp: Date.now()
+                });
+            } catch (e) {
+                console.warn('输出指令发送失败', e);
+            }
+            cc._refreshCache();
+        };
+
+        modeGrp.on('mouseenter', () => {
+            if (isModuleAvailable(cc, 'ao')) {
+                modeGrp.getStage().container().style.cursor = 'pointer';
+                modeBg.fill('#d4dce8');
+            }
+        });
+        modeGrp.on('mouseleave', () => {
+            modeGrp.getStage().container().style.cursor = 'default';
+            modeBg.fill(isModuleAvailable(cc, 'ao') ? '#e2e6f4' : C.textDim + '33');
+        });
+
+        modeGrp.on('click tap', () => {
+            if (!isModuleAvailable(cc, 'ao')) return;
+            const ao = cc.sys.comps['ao'];
+            if (!ao || !ao.channels || !ao.channels[ch.id]) return;
+
+            const cur = ao.channels[ch.id].mode || 'disable';
+            const seq = ['hand', 'auto', 'disable'];
+            const next = seq[(seq.indexOf(cur) + 1) % seq.length];
+
+            // 发送 CAN 配置指令（扩展命令 0x12 = 模式设置）
+            // 通过 AO_CMD 帧的字节 8 位置传递命令类型
+            const modeMap = { hand: 0, auto: 1, disable: 2 };
+            const data = [0x12, i & 0xFF, modeMap[next] & 0xFF, 0, 0, 0, 0, 0];
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.AO_CMD, 2),  // 节点地址 2（AO模块）
+                    extended: false, rtr: false, dlc: 8, data,
+                    sender: cc.id, timestamp: Date.now()
+                });
+                // 乐观UI更新
+                if (!cc.data.ao[ch.id]) cc.data.ao[ch.id] = {};
+                cc.data.ao[ch.id].mode = next;
+                modeTxt.text(`Mode: ${next}`);
+                modeTxt.fill(next === 'hand' ? C.yellow : next === 'auto' ? C.green : C.textDim);
+                sliderGrp.opacity(next === 'hand' ? 1 : 0.01);
+                if (next === 'disable') {
+                    applyVal(0); // 禁用时手动输出 0
+                }
+
+                // 延时读取以同步参数
+                setTimeout(() => {
+                    cc._requestNodeConfig('ao', 0x14, i);
+                }, 200);
+            } catch (e) {
+                console.warn('模式切换失败', e);
+            }
             cc._refreshCache();
         });
 
-        // 滑块
+        // ── LRV/URV 显示和编辑 ──
+        const lrvText = new Konva.Text({ x: 14, y: y + 38, text: 'LRV: 0%', fontSize: 12, fontFamily: 'Courier New', fill: C.textDim });
+        const urvText = new Konva.Text({ x: 114, y: y + 38, text: 'URV: 100%', fontSize: 12, fontFamily: 'Courier New', fill: C.textDim });
+        pg.add(lrvText, urvText);
+
+        lrvText.on('click tap', () => {
+            if (!isModuleAvailable(cc, 'ao')) return;
+            const ao = cc.sys.comps['ao'];
+            if (!ao || !ao.ranges || !ao.ranges[ch.id]) return;
+            const v = prompt(`设置 ${ch.label} LRV（下限，当前 ${ao.ranges[ch.id].lrv}）:`, String(ao.ranges[ch.id].lrv));
+            if (v === null) return;
+            const num = parseFloat(v);
+            if (isNaN(num)) return alert('请输入有效数字');
+            const lrv = Math.max(0, Math.min(100, num));
+            const urv = ao.ranges[ch.id].urv;
+
+            // 发送 CAN 配置指令（0x13 = LRV/URV 设置）
+            const lrvInt = Math.round(lrv * 100);
+            const urvInt = Math.round(urv * 100);
+            const data = [0x13, i & 0xFF, (lrvInt >> 8) & 0xFF, lrvInt & 0xFF, (urvInt >> 8) & 0xFF, urvInt & 0xFF, 0, 0];
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.AO_CMD, 2),  // 节点地址 2（AO模块）
+                    extended: false, rtr: false, dlc: 8, data,
+                    sender: cc.id, timestamp: Date.now()
+                });
+                // 乐观UI更新
+                if (!cc.data.ao[ch.id]) cc.data.ao[ch.id] = {};
+                cc.data.ao[ch.id].lrv = lrv;
+                lrvText.text(`LRV: ${lrv}%`);
+
+                // 延时读取以同步参数
+                setTimeout(() => {
+                    cc._requestNodeConfig('ao', 0x14, i);
+                }, 200);
+            } catch (e) {
+                console.warn('LRV 设置失败', e);
+            }
+            cc._refreshCache();
+        });
+
+        urvText.on('click tap', () => {
+            if (!isModuleAvailable(cc, 'ao')) return;
+            const ao = cc.sys.comps['ao'];
+            if (!ao || !ao.ranges || !ao.ranges[ch.id]) return;
+            const v = prompt(`设置 ${ch.label} URV（上限，当前 ${ao.ranges[ch.id].urv}）:`, String(ao.ranges[ch.id].urv));
+            if (v === null) return;
+            const num = parseFloat(v);
+            if (isNaN(num)) return alert('请输入有效数字');
+            const urv = Math.max(0, Math.min(100, num));
+            const lrv = ao.ranges[ch.id].lrv;
+
+            // 发送 CAN 配置指令（0x13 = LRV/URV 设置）
+            const lrvInt = Math.round(lrv * 100);
+            const urvInt = Math.round(urv * 100);
+            const data = [0x13, i & 0xFF, (lrvInt >> 8) & 0xFF, lrvInt & 0xFF, (urvInt >> 8) & 0xFF, urvInt & 0xFF, 0, 0];
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.AO_CMD, 2),  // 节点地址 2（AO模块）
+                    extended: false, rtr: false, dlc: 8, data,
+                    sender: cc.id, timestamp: Date.now()
+                });
+                // 乐观UI更新
+                if (!cc.data.ao[ch.id]) cc.data.ao[ch.id] = {};
+                cc.data.ao[ch.id].urv = urv;
+                urvText.text(`URV: ${urv}%`);
+
+                // 延时读取以同步参数
+                setTimeout(() => {
+                    cc._requestNodeConfig('ao', 0x14, i);
+                }, 200);
+            } catch (e) {
+                console.warn('URV 设置失败', e);
+            }
+            cc._refreshCache();
+        });
+
+        // LRV/URV 文本鼠标效果
+        [lrvText, urvText].forEach(txt => {
+            txt.on('mouseenter', () => {
+                if (isModuleAvailable(cc, 'ao')) {
+                    txt.getStage().container().style.cursor = 'pointer';
+                    txt.fill(C.blue);
+                }
+            });
+            txt.on('mouseleave', () => {
+                txt.getStage().container().style.cursor = 'default';
+                txt.fill(C.textDim);
+            });
+        });
+
+        // ── 滑块（hand 模式下可用）──
+        const sliderGrp = new Konva.Group({ x: 154, y: y + 72, opacity: 1 });
         const trackRect = new Konva.Rect({ width: sliderTrackW, height: 6, fill: C.gridLine, stroke: C.border, strokeWidth: 1, cornerRadius: 3 });
         const fillRect = new Konva.Rect({ width: 0, height: 6, fill: C.orange, cornerRadius: 3 });
         const thumb = new Konva.Circle({ x: 0, y: 3, radius: 7, fill: C.orange, stroke: C.bg, strokeWidth: 2 });
@@ -451,30 +617,157 @@ export function buildAOPage(cc) {
 
         thumb.draggable(true);
         thumb.dragBoundFunc(pos => {
+            // 检查是否为 hand 模式，不是则禁止拖动
+            const ao = cc.sys.comps['ao'];
+            if (!ao || !ao.channels || !ao.channels[ch.id] || ao.channels[ch.id].mode !== 'hand') {
+                return { x: thumb.getAbsolutePosition().x, y: thumb.getAbsolutePosition().y };
+            }
+
             const absGroupX = sliderGrp.getAbsolutePosition().x;
             const localX = pos.x - absGroupX;
-            const clamped = Math.max(0, Math.min(sliderTrackW, localX));
+            const clamped = Math.max(0, Math.min(sliderTrackW + 200, localX));
             return { x: clamped + absGroupX, y: thumb.getAbsolutePosition().y };
         });
 
-        const applyVal = (clamped) => {
-            const pct = Math.round((clamped / sliderTrackW) * 100);
-            cc.aoManualVal[ch.id] = pct;
-            thumb.x(clamped);
-            fillRect.width(clamped);
-            valLabel.text(`${pct}%`);
-            try { cc.sys.getModule('AO').setOutput(ch.id, pct); } catch (_) { }
-            cc._refreshCache();
-        };
 
-        thumb.on('dragmove', () => { if (cc.aoManual[ch.id]) applyVal(thumb.x()); });
-        trackRect.on('click tap', (e) => {
-            if (!cc.aoManual[ch.id]) return;
-            const localX = e.evt.clientX - sliderGrp.getAbsolutePosition().x;
-            applyVal(Math.max(0, Math.min(sliderTrackW, localX)));
+
+        thumb.on('dragmove', () => {
+            const ao = cc.sys.comps['ao'];
+            if (ao && ao.channels && ao.channels[ch.id] && ao.channels[ch.id].mode === 'hand') {
+                // 相对于 sliderGrp 的本地坐标
+                const localX = thumb.x();
+                applyVal(localX);
+            }
         });
 
-        cc._aoRows[ch.id] = { curVal, modeBtn, sliderGrp, fillRect, thumb, valLabel };
+        // ── 安全输出配置显示和编辑 ──
+        // 模式文本框：显示 "Safe: mode"，点击切换模式
+        const safeModeText = new Konva.Text({ x: 214, y: y + 38, text: 'Safe: hold', fontSize: 12, fontFamily: 'Courier New', fill: C.textDim });
+        pg.add(safeModeText);
+
+        // 预设值文本框：显示 "[50%]"，仅 preset 模式显示，点击修改
+        const safePresetText = new Konva.Text({ x: 314, y: y + 38, text: '', fontSize: 12, fontFamily: 'Courier New', fill: C.textDim });
+        pg.add(safePresetText);
+
+        // 模式切换事件
+        safeModeText.on('click tap', () => {
+            if (!isModuleAvailable(cc, 'ao')) return;
+            const ao = cc.sys.comps['ao'];
+            if (!ao || !ao.safeOutput || !ao.safeOutput[ch.id]) return;
+            const safeOut = ao.safeOutput[ch.id];
+
+            const curMode = safeOut.mode || 'hold';
+            let presetVal = safeOut.presetPercent || 0;
+
+            // 循环切换模式：hold → zero → preset
+            const modeSeq = ['hold', 'preset', 'zero'];
+            const nextMode = modeSeq[(modeSeq.indexOf(curMode) + 1) % modeSeq.length];
+
+            // 发送 CAN 配置指令（0x16 = 安全输出设置）
+            const modeMap = { hold: 0, preset: 1, zero: 2 };
+            const presetInt = Math.round(presetVal * 100);
+            const data = [0x16, i & 0xFF, modeMap[nextMode] & 0xFF,
+                (presetInt >> 8) & 0xFF, presetInt & 0xFF, 0, 0, 0];
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.AO_CMD, 2),  // 节点地址 2（AO模块）
+                    extended: false, rtr: false, dlc: 8, data,
+                    sender: cc.id, timestamp: Date.now()
+                });
+                // 乐观UI更新
+                if (!cc.data.ao[ch.id]) cc.data.ao[ch.id] = {};
+                if (!cc.data.ao[ch.id].safeOutput) cc.data.ao[ch.id].safeOutput = {};
+                cc.data.ao[ch.id].safeOutput.mode = nextMode;
+                cc.data.ao[ch.id].safeOutput.presetPercent = presetVal;
+
+                // 更新模式文本
+                safeModeText.text(`Safe: ${nextMode}`);
+                // 更新预设值文本（仅 preset 模式显示）
+                safePresetText.text(nextMode === 'preset' ? `[${presetVal}%]` : '');
+
+                // 延时读取以同步参数
+                setTimeout(() => {
+                    cc._requestNodeConfig('ao', 0x15, i);
+                }, 200);
+            } catch (e) {
+                console.warn('安全输出设置失败', e);
+            }
+            cc._refreshCache();
+        });
+
+        // 预设值修改事件（仅 preset 模式可用）
+        safePresetText.on('click tap', () => {
+            if (!isModuleAvailable(cc, 'ao')) return;
+            const ao = cc.sys.comps['ao'];
+            if (!ao || !ao.safeOutput || !ao.safeOutput[ch.id]) return;
+            const safeOut = ao.safeOutput[ch.id];
+
+            // 只有 preset 模式时才允许修改
+            if (safeOut.mode !== 'preset') return;
+
+            let presetVal = safeOut.presetPercent || 0;
+            const input = prompt(`修改 ${ch.label} 预设值（0-100%）:`, String(presetVal));
+            if (input === null) return;  // 用户取消
+            const num = parseFloat(input);
+            if (isNaN(num)) return alert('请输入有效数字');
+            presetVal = Math.max(0, Math.min(100, num));
+
+            // 发送 CAN 配置指令（0x16 = 安全输出设置）
+            const modeMap = { hold: 0, preset: 1, zero: 2 };
+            const presetInt = Math.round(presetVal * 100);
+            const data = [0x16, i & 0xFF, modeMap['preset'] & 0xFF,
+                (presetInt >> 8) & 0xFF, presetInt & 0xFF, 0, 0, 0];
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.AO_CMD, 2),
+                    extended: false, rtr: false, dlc: 8, data,
+                    sender: cc.id, timestamp: Date.now()
+                });
+                // 乐观UI更新
+                if (!cc.data.ao[ch.id]) cc.data.ao[ch.id] = {};
+                if (!cc.data.ao[ch.id].safeOutput) cc.data.ao[ch.id].safeOutput = {};
+                cc.data.ao[ch.id].safeOutput.presetPercent = presetVal;
+                safePresetText.text(`[${presetVal}%]`);
+
+                // 延时读取以同步参数
+                setTimeout(() => {
+                    cc._requestNodeConfig('ao', 0x15, i);
+                }, 200);
+            } catch (e) {
+                console.warn('预设值修改失败', e);
+            }
+            cc._refreshCache();
+        });
+
+        // 模式文本框鼠标效果
+        safeModeText.on('mouseenter', () => {
+            if (isModuleAvailable(cc, 'ao')) {
+                safeModeText.getStage().container().style.cursor = 'pointer';
+                safeModeText.fill(C.blue);
+            }
+        });
+        safeModeText.on('mouseleave', () => {
+            safeModeText.getStage().container().style.cursor = 'default';
+            safeModeText.fill(C.textDim);
+        });
+
+        // 预设值文本框鼠标效果
+        safePresetText.on('mouseenter', () => {
+            if (isModuleAvailable(cc, 'ao')) {
+                const ao = cc.sys.comps['ao'];
+                // 仅 preset 模式时显示指针
+                if (ao && ao.safeOutput && ao.safeOutput[ch.id] && ao.safeOutput[ch.id].mode === 'preset') {
+                    safePresetText.getStage().container().style.cursor = 'pointer';
+                    safePresetText.fill(C.blue);
+                }
+            }
+        });
+        safePresetText.on('mouseleave', () => {
+            safePresetText.getStage().container().style.cursor = 'default';
+            safePresetText.fill(C.textDim);
+        });
+
+        cc._aoRows[ch.id] = { curVal, modeGrp, modeBg, modeTxt, lrvText, urvText, safeModeText, safePresetText, sliderGrp, fillRect, thumb, valLabel };
     });
 }
 
@@ -487,10 +780,9 @@ export function buildDISetPage(cc) {
     pg.add(new Konva.Rect({ width: pw, height: ph, fill: C.panel, cornerRadius: 3 }));
     pg.add(new Konva.Text({ x: 8, y: 6, text: '■ DI 数字量输入设置', fontSize: 14, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.green }));
 
-    ['通道', '类型', '当前状态', '计数器', '防抖时间', '动作'].forEach((h, i) => {
-        pg.add(new Konva.Text({ x: [8, 72, 148, 240, 340, 420][i], y: 28, text: h, fontSize: 10, fontFamily: 'Courier New', fill: C.textDim }));
+    ['通道', '类型', '当前状态', '计数器', '防抖时间', '复位计数', '报警触发'].forEach((h, i) => {
+        pg.add(new Konva.Text({ x: [8, 72, 148, 240, 340, 420, 500][i], y: 30, text: h, fontSize: 12, fontFamily: 'Courier New', fill: C.textDim }));
     });
-    pg.add(new Konva.Line({ points: [6, 40, pw - 6, 40], stroke: C.border, strokeWidth: 1 }));
 
     const chDefs = [
         { id: 'ch1', label: 'CH1', type: '干接点' },
@@ -501,21 +793,107 @@ export function buildDISetPage(cc) {
 
     cc._diRows = {};
     chDefs.forEach((ch, i) => {
-        const y = 48 + i * 58;
+        const y = 50 + i * 60;
         pg.add(new Konva.Rect({ x: 6, y: y - 2, width: pw - 12, height: 52, fill: C.bg, stroke: C.border, strokeWidth: 1, cornerRadius: 2 }));
-        pg.add(new Konva.Text({ x: 14, y: y + 4, text: ch.label, fontSize: 11, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.text }));
-        pg.add(new Konva.Text({ x: 72, y: y + 4, text: ch.type, fontSize: 10, fontFamily: 'Courier New', fill: C.textDim }));
+        pg.add(new Konva.Text({ x: 14, y: y + 20, text: ch.label, fontSize: 11, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.text }));
+        pg.add(new Konva.Text({ x: 72, y: y + 20, text: ch.type, fontSize: 10, fontFamily: 'Courier New', fill: C.textDim }));
 
-        const stateDisp = new Konva.Text({ x: 148, y: y + 4, text: 'OFF', fontSize: 11, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.textDim });
-        const counterDisp = new Konva.Text({ x: 240, y: y + 4, text: '0', fontSize: 11, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.cyan });
+        const stateDisp = new Konva.Text({ x: 148, y: y + 20, text: 'OFF', fontSize: 11, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.textDim });
+        const counterDisp = new Konva.Text({ x: 240, y: y + 20, text: '0', fontSize: 11, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.cyan });
         pg.add(stateDisp, counterDisp);
-        pg.add(new Konva.Text({ x: 340, y: y + 4, text: '20ms', fontSize: 10, fontFamily: 'Courier New', fill: C.textDim }));
+        pg.add(new Konva.Text({ x: 340, y: y + 20, text: '20ms', fontSize: 10, fontFamily: 'Courier New', fill: C.textDim }));
 
-        const resetBtn = mkBtn(pg, '复位', 420, y + 4, C.orange);
-        resetBtn.on('click tap', () => { counterDisp.text('0'); });
+        // 复位按钮 - 清除计数器
+        const resetBtn = mkBtn(pg, '复位', 420, y + 14, C.orange);
+        resetBtn.on('click tap', () => {
+            // 发送 CAN 命令清除计数 (cmd=0x02, chMask对应当前通道)
+            const chIdx = i;
+            const chMask = 1 << chIdx;  // 仅清除当前通道
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.DI_CONFIG, 3),  // 节点地址 3
+                    extended: false, rtr: false, dlc: 2,
+                    data: [0x02, chMask, 0, 0, 0, 0, 0, 0],
+                    sender: cc.id, timestamp: Date.now()
+                });
+                // 乐观UI更新
+                cc.data.di[ch.id].counter = 0;
+                counterDisp.text('0');
+                cc._refreshCache();
+            } catch (e) {
+                console.warn('计数器清除失败', e);
+            }
+        });
 
-        cc._diRows[ch.id] = { stateDisp, counterDisp };
+        // 报警按钮 - 切换触发方式 (ON -> OFF -> NONE -> ON)
+        const triggerMap = { 'ON': '闭合报警', 'OFF': '断开报警', 'NONE': '不报警' };
+        const reverseTriggerMap = { '闭合报警': 'ON', '断开报警': 'OFF', '不报警': 'NONE' };
+        const triggerOrder = ['ON', 'OFF', 'NONE'];
+
+        const currentTrigger = cc.data.di[ch.id].trigger || 'OFF';
+        const alarmBtn = mkToggle(pg, triggerMap[currentTrigger], 500, y + 14, 80, 22, false, C.red);
+
+        alarmBtn.on('click tap', () => {
+            // 获取当前触发方式
+            const currentText = alarmBtn.findOne('Text').text();
+            const currentTrigger = reverseTriggerMap[currentText];
+
+            // 循环到下一种方式
+            const currentIdx = triggerOrder.indexOf(currentTrigger);
+            const nextTrigger = triggerOrder[(currentIdx + 1) % triggerOrder.length];
+            const nextText = triggerMap[nextTrigger];
+
+            // 更新本地数据
+            cc.data.di[ch.id].trigger = nextTrigger;
+
+            // 发送 CAN 命令更改报警触发方式
+            // 编码方案：Byte3 中对应位的值表示触发方式 (0=OFF, 1=ON, 2=NONE)
+            const chIdx = i;
+            const chMask = 1 << chIdx;
+            const triggerValue = (nextTrigger === 'ON') ? 1 : (nextTrigger === 'NONE' ? 2 : 0);
+
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.DI_CONFIG, 3),  // 节点地址 3
+                    extended: false, rtr: false, dlc: 4,
+                    data: [0x01, chMask, chIdx, triggerValue, 0, 0, 0, 0],
+                    sender: cc.id, timestamp: Date.now()
+                });
+            } catch (e) {
+                console.warn('报警触发方式更改失败', e);
+            }
+
+            // 更新UI
+            const btnColor = nextTrigger === 'NONE' ? C.textDim : (nextTrigger === 'ON' ? C.red : C.orange);
+            const alarmBtnChildren = alarmBtn.getChildren();
+            if (alarmBtnChildren && alarmBtnChildren.length >= 2) {
+                alarmBtnChildren[0].fill(btnColor + '33');
+                alarmBtnChildren[0].stroke(btnColor);
+                alarmBtnChildren[1].text(nextText);
+                alarmBtnChildren[1].fill(btnColor);
+            }
+            cc._refreshCache();
+        });
+
+
+
+        cc._diRows[ch.id] = { stateDisp, counterDisp, alarmBtn };
     });
+    // 初始化参数请求
+    setTimeout(() => {
+        try {
+            const bus = cc.sys?.canBus;
+            const diOnline = bus ? bus.isNodeOnline('di') : false;
+            if (diOnline && cc.busConnected && !cc.commFault) {
+                cc.nodeConfigs.di.available = true;
+                cc.nodeConfigs.di.pending = false;
+                cc._initDIParams();
+            } else {
+                cc.nodeConfigs.di.available = false;
+                cc.nodeConfigs.di.pending = true;
+            }
+        } catch (e) { console.warn(e); }
+    }, 200);
 }
 
 // ══════════════════════════════════════════
@@ -527,60 +905,265 @@ export function buildDOPage(cc) {
     pg.add(new Konva.Rect({ width: pw, height: ph, fill: C.panel, cornerRadius: 3 }));
     pg.add(new Konva.Text({ x: 8, y: 6, text: '■ DO 数字量输出控制', fontSize: 12, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.purple }));
 
-    ['通道', '类型', '当前状态', '控制模式', '手动强制'].forEach((h, i) => {
-        pg.add(new Konva.Text({ x: [8, 72, 148, 258, 370][i], y: 22, text: h, fontSize: 9, fontFamily: 'Courier New', fill: C.textDim }));
+    ['通道', '类型', '当前状态', '控制模式', '手动手动', '脉冲参数', '安全输出'].forEach((h, i) => {
+        pg.add(new Konva.Text({ x: [8, 68, 138, 220, 310, 400, 520][i], y: 24, text: h, fontSize: 11, fontFamily: 'Courier New', fill: C.textDim }));
     });
-    pg.add(new Konva.Line({ points: [6, 34, pw - 6, 34], stroke: C.border, strokeWidth: 1 }));
 
     const chDefs = [
         { id: 'ch1', label: 'CH1', type: 'RELAY' },
         { id: 'ch2', label: 'CH2', type: 'RELAY' },
-        { id: 'ch3', label: 'CH3', type: '24V' },
-        { id: 'ch4', label: 'CH4', type: '24V' },
+        { id: 'ch3', label: 'CH3', type: '24VPNP' },
+        { id: 'ch4', label: 'CH4', type: '24VPNP' },
     ];
 
-    cc._doRows = {};
-    chDefs.forEach((ch, i) => {
-        const y = 40 + i * 54;
-        pg.add(new Konva.Rect({ x: 6, y: y - 2, width: pw - 12, height: 48, fill: C.bg, stroke: C.border, strokeWidth: 1, cornerRadius: 2 }));
-        pg.add(new Konva.Text({ x: 14, y: y + 4, text: ch.label, fontSize: 10, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.text }));
-        pg.add(new Konva.Text({ x: 72, y: y + 4, text: ch.type, fontSize: 9, fontFamily: 'Courier New', fill: C.textDim }));
+    // 模式名：内部值 → 显示文字
+    const MODE_LABELS = { hand: '手  动', auto: '自  动', pulse: '脉冲模式', disable: '禁  用' };
+    const MODE_COLORS = { hand: C.yellow, auto: C.green, pulse: C.cyan, disable: C.textDim };
+    const MODE_SEQ    = ['hand', 'auto', 'pulse', 'disable'];
 
-        const stateDisp = new Konva.Text({ x: 148, y: y + 2, width: 90, text: 'OFF', fontSize: 16, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.textDim });
+    cc._doRows = {};
+
+    chDefs.forEach((ch, i) => {
+        const y = 40 + i * 60;
+        pg.add(new Konva.Rect({ x: 6, y: y - 2, width: pw - 12, height: 52, fill: C.bg, stroke: C.border, strokeWidth: 1, cornerRadius: 2 }));
+        pg.add(new Konva.Text({ x: 14, y: y + 16, text: ch.label, fontSize: 12, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.text }));
+        pg.add(new Konva.Text({ x: 68, y: y + 16, text: ch.type, fontSize: 11, fontFamily: 'Courier New', fill: C.textDim }));
+
+        // ── 当前状态 ──
+        const stateDisp = new Konva.Text({
+            x: 138, y: y + 12, width: 80, text: 'OFF',
+            fontSize: 16, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.textDim
+        });
         pg.add(stateDisp);
 
-        const modeBtn = mkToggle(pg, '自  动', 258, y + 2, 78, 22, false, C.green);
-        const forceBtn = mkToggle(pg, '强制 OFF', 370, y + 2, 90, 22, false, C.textDim);
+        // ── 模式按钮（4 种循环）──
+        const modeBtn = mkToggle(pg, '手  动', 220, y + 10, 70, 24, false, C.yellow);
+
+        // ── 手动手动按钮（仅 hand 模式激活）──
+        const forceBtn = mkToggle(pg, '手动 OFF', 310, y + 10, 60, 24, false, C.textDim);
         forceBtn.opacity(0.35);
 
+        // ── 脉冲参数按钮（仅 pulse 模式激活）──
+        const pulseBtn = mkToggle(pg, '500  500  0', 400, y + 10, 98, 24, false, C.cyan);
+        pulseBtn.opacity(0.35);
+
+        // ── 安全输出按钮（循环 off / hold / preset）──
+        const safeBtn = mkToggle(pg, 'Safe: off', 520, y + 10, 70, 24, false, C.textDim);
+
+        // ── preset 预设状态按钮（仅 preset 模式才可见）──
+        const presetBtn = mkToggle(pg, '预设: OFF', 600, y + 10, 52, 24, false, C.orange);
+        presetBtn.visible(false);
+
+        // ── 模式切换逻辑 ──
         modeBtn.on('click tap', () => {
-            cc.doManual[ch.id] = !cc.doManual[ch.id];
-            const isM = cc.doManual[ch.id];
-            modeBtn.findOne('Rect').fill(isM ? C.yellow + '33' : C.green + '22');
-            modeBtn.findOne('Rect').stroke(isM ? C.yellow : C.green);
-            modeBtn.findOne('Text').text(isM ? '手  动' : '自  动');
-            modeBtn.findOne('Text').fill(isM ? C.yellow : C.green);
-            forceBtn.opacity(isM ? 1 : 0.35);
+            if (!isModuleAvailable(cc, 'do')) return;
+            const doMod = cc.sys.comps['do'];
+            if (!doMod) return;
+            const cur = doMod.channels?.[ch.id]?.mode || 'hand';
+            const next = MODE_SEQ[(MODE_SEQ.indexOf(cur) + 1) % MODE_SEQ.length];
+            const modeIdx = MODE_SEQ.indexOf(next);
+            // 发送 CAN 0x10 设置模式
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.DO_CMD, 4),
+                    extended: false, rtr: false, dlc: 8,
+                    data: [0x10, 1 << i, modeIdx & 0xFF, 0, 0, 0, 0, 0],
+                    sender: cc.id, timestamp: Date.now()
+                });
+            } catch (e) { console.warn(e); }
+            // 乐观 UI 更新
+            if (doMod.channels?.[ch.id]) doMod.channels[ch.id].mode = next;
+            if (!cc.data.do[ch.id]) cc.data.do[ch.id] = {};
+            cc.data.do[ch.id].mode = next;
+            _applyDoModeUI(modeBtn, forceBtn, pulseBtn, next, doMod, ch.id);
             cc._refreshCache();
         });
 
+        // ── 手动手动切换 ──
         forceBtn.on('click tap', () => {
-            if (!cc.doManual[ch.id]) return;
-            cc.doManualState[ch.id] = !cc.doManualState[ch.id];
-            const on = cc.doManualState[ch.id];
-            forceBtn.findOne('Rect').fill(on ? C.red + '33' : C.textDim + '22');
-            forceBtn.findOne('Rect').stroke(on ? C.red : C.textDim);
-            forceBtn.findOne('Text').text(on ? '强制  ON ' : '强制 OFF');
-            forceBtn.findOne('Text').fill(on ? C.red : C.textDim);
-            try { cc.sys.getModule('DO').setOutput(ch.id, on); } catch (_) { }
+            if (!isModuleAvailable(cc, 'do')) return;
+            const doMod = cc.sys.comps['do'];
+            if (!doMod) return;
+            const curMode = doMod.channels?.[ch.id]?.mode || 'hand';
+            if (curMode !== 'hand') return;
+            const curState = doMod.channels?.[ch.id]?.state ?? false;
+            const nextState = !curState;
+            // 发送 CAN 0x01 直接输出控制
+            const stateMask = nextState ? (1 << i) : 0;
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.DO_CMD, 4),
+                    extended: false, rtr: false, dlc: 8,
+                    data: [0x01, 1 << i, stateMask, 0, 0, 0, 0, 0],
+                    sender: cc.id, timestamp: Date.now()
+                });
+            } catch (e) { console.warn(e); }
+            if (doMod.channels?.[ch.id]) doMod.channels[ch.id].state = nextState;
+            const onColor = C.red;
+            const forceBtnChildren = forceBtn.getChildren();
+            if (forceBtnChildren && forceBtnChildren.length >= 2) {
+                forceBtnChildren[0].fill(nextState ? onColor + '33' : C.textDim + '22');
+                forceBtnChildren[0].stroke(nextState ? onColor : C.textDim);
+                forceBtnChildren[1].text(nextState ? '手动  ON ' : '手动 OFF');
+                forceBtnChildren[1].fill(nextState ? onColor : C.textDim);
+            }
             cc._refreshCache();
         });
 
-        const infoText = new Konva.Text({ x: 148, y: y + 28, text: '', fontSize: 8, fontFamily: 'Courier New', fill: C.textDim });
-        pg.add(infoText);
+        // ── 脉冲参数弹窗 ──
+        pulseBtn.on('click tap', () => {
+            if (!isModuleAvailable(cc, 'do')) return;
+            const doMod = cc.sys.comps['do'];
+            if (!doMod) return;
+            const curMode = doMod.channels?.[ch.id]?.mode || 'hand';
+            if (curMode !== 'pulse') return;
+            const pc = doMod.pulseConfig?.[ch.id] || { onMs: 500, offMs: 500, phaseStart: 0 };
+            const input = prompt(
+                `设置 ${ch.label} 脉冲参数\n格式：高电平时间(ms) 低电平时间(ms) 相位(ms)\n当前：${pc.onMs}  ${pc.offMs}  ${pc.phaseStart}`,
+                `${pc.onMs} ${pc.offMs} ${pc.phaseStart}`
+            );
+            if (input === null) return;
+            const parts = input.trim().split(/\s+/).map(Number);
+            if (parts.length < 2 || parts.some(isNaN)) return alert('请输入有效数字，用空格分隔');
+            const onMs  = Math.max(50, parts[0]);
+            const offMs = Math.max(50, parts[1]);
+            const phase = Math.max(0, parts[2] || 0);
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.DO_CMD, 4),
+                    extended: false, rtr: false, dlc: 8,
+                    data: [
+                        0x11, 1 << i,
+                        (onMs >> 8) & 0xFF, onMs & 0xFF,
+                        (offMs >> 8) & 0xFF, offMs & 0xFF,
+                        (phase >> 8) & 0xFF, phase & 0xFF
+                    ],
+                    sender: cc.id, timestamp: Date.now()
+                });
+            } catch (e) { console.warn(e); }
+            if (doMod.pulseConfig?.[ch.id]) {
+                doMod.pulseConfig[ch.id].onMs  = onMs;
+                doMod.pulseConfig[ch.id].offMs = offMs;
+                doMod.pulseConfig[ch.id].phaseStart = phase;
+            }
+            pulseBtn.findOne('Text').text(`${onMs}  ${offMs}  ${phase}`);
+            cc._refreshCache();
+        });
 
-        cc._doRows[ch.id] = { stateDisp, modeBtn, forceBtn, infoText };
+        // ── 安全输出模式切换 ──
+        const SAFE_SEQ = ['off', 'hold', 'preset'];
+        const SAFE_COLORS = { off: C.textDim, hold: C.yellow, preset: C.orange };
+        safeBtn.on('click tap', () => {
+            if (!isModuleAvailable(cc, 'do')) return;
+            const doMod = cc.sys.comps['do'];
+            if (!doMod) return;
+            const cur = doMod.safeOutput?.[ch.id]?.mode || 'off';
+            const next = SAFE_SEQ[(SAFE_SEQ.indexOf(cur) + 1) % SAFE_SEQ.length];
+            const modeIdx = SAFE_SEQ.indexOf(next);
+            const presMask = doMod.safeOutput?.[ch.id]?.presetState ? (1 << i) : 0;
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.DO_CMD, 4),
+                    extended: false, rtr: false, dlc: 8,
+                    data: [0x12, 1 << i, modeIdx & 0xFF, presMask, 0, 0, 0, 0],
+                    sender: cc.id, timestamp: Date.now()
+                });
+            } catch (e) { console.warn(e); }
+            if (doMod.safeOutput?.[ch.id]) doMod.safeOutput[ch.id].mode = next;
+            if (!cc.data.do[ch.id]) cc.data.do[ch.id] = {};
+            cc.data.do[ch.id].safeMode = next;
+            const sc = SAFE_COLORS[next];
+            const safeBtnChildren = safeBtn.getChildren();
+            if (safeBtnChildren && safeBtnChildren.length >= 2) {
+                safeBtnChildren[0].fill(sc + '33');
+                safeBtnChildren[0].stroke(sc);
+                safeBtnChildren[1].text(`Safe: ${next}`);
+                safeBtnChildren[1].fill(sc);
+            }
+            presetBtn.visible(next === 'preset');
+            cc._refreshCache();
+        });
+
+        // ── preset 状态切换 ──
+        presetBtn.on('click tap', () => {
+            if (!isModuleAvailable(cc, 'do')) return;
+            const doMod = cc.sys.comps['do'];
+            if (!doMod) return;
+            const curPreset = doMod.safeOutput?.[ch.id]?.presetState ?? false;
+            const nextPreset = !curPreset;
+            const modeIdx = SAFE_SEQ.indexOf(doMod.safeOutput?.[ch.id]?.mode || 'preset');
+            const presMask = nextPreset ? (1 << i) : 0;
+            try {
+                cc.sys.canBus.send({
+                    id: CANId.encode(CAN_FUNC.DO_CMD, 4),
+                    extended: false, rtr: false, dlc: 8,
+                    data: [0x12, 1 << i, modeIdx < 0 ? 2 : modeIdx, presMask, 0, 0, 0, 0],
+                    sender: cc.id, timestamp: Date.now()
+                });
+            } catch (e) { console.warn(e); }
+            if (doMod.safeOutput?.[ch.id]) doMod.safeOutput[ch.id].presetState = nextPreset;
+            if (!cc.data.do[ch.id]) cc.data.do[ch.id] = {};
+            cc.data.do[ch.id].presetState = nextPreset;
+            const presetBtnChildren = presetBtn.getChildren();
+            if (presetBtnChildren && presetBtnChildren.length >= 2) {
+                presetBtnChildren[1].text(nextPreset ? '预设:  ON' : '预设: OFF');
+                presetBtnChildren[0].fill(nextPreset ? C.orange + '33' : C.textDim + '22');
+                presetBtnChildren[0].stroke(nextPreset ? C.orange : C.textDim);
+                presetBtnChildren[1].fill(nextPreset ? C.orange : C.textDim);
+            }
+            cc._refreshCache();
+        });
+
+        cc._doRows[ch.id] = { stateDisp, modeBtn, forceBtn, pulseBtn, safeBtn, presetBtn };
     });
+
+    // ── 初始化：DO 上线后读取参数 ──
+    setTimeout(() => {
+        try {
+            const bus = cc.sys?.canBus;
+            const doOnline = bus ? bus.isNodeOnline('do') : false;
+            if (doOnline && cc.busConnected && !cc.commFault) {
+                cc.nodeConfigs.do.available = true;
+                cc.nodeConfigs.do.pending = false;
+                cc._initDOParams();
+            } else {
+                cc.nodeConfigs.do.available = false;
+                cc.nodeConfigs.do.pending = true;
+            }
+        } catch (e) { console.warn(e); }
+    }, 200);
+}
+
+/**
+ * 内部辅助：根据模式更新 DO 行按钮外观
+ */
+function _applyDoModeUI(modeBtn, forceBtn, pulseBtn, mode, doMod, chId) {
+    const MODE_LABELS = { hand: '手  动', auto: '自  动', pulse: '脉冲模式', disable: '禁  用' };
+    const MODE_COLORS = { hand: C.yellow, auto: C.green, pulse: C.cyan, disable: C.textDim };
+    const mc = MODE_COLORS[mode] || C.textDim;
+    
+    // 直接访问 Group 的子元素
+    let children = modeBtn.getChildren();
+    if (children && children.length >= 2) {
+        children[0].fill(mc + '33');
+        children[0].stroke(mc);
+        children[1].text(MODE_LABELS[mode] || mode);
+        children[1].fill(mc);
+    }
+
+    const isHand  = mode === 'hand';
+    const isPulse = mode === 'pulse';
+    forceBtn.opacity(isHand  ? 1 : 0.35);
+    pulseBtn.opacity(isPulse ? 1 : 0.35);
+
+    if (isPulse && doMod?.pulseConfig?.[chId]) {
+        const pc = doMod.pulseConfig[chId];
+        const phMs = pc.phaseStart;
+        children = pulseBtn.getChildren();
+        if (children && children.length >= 2) {
+            children[1].text(`${pc.onMs}  ${pc.offMs}  ${phMs}`);
+        }
+    }
 }
 
 // ══════════════════════════════════════════
@@ -592,8 +1175,8 @@ export function buildLevelPage(cc) {
     pg.add(new Konva.Rect({ width: pw, height: ph, fill: C.panel, cornerRadius: 3 }));
     pg.add(new Konva.Text({ x: 8, y: 6, text: '■ 液位双位控制系统', fontSize: 12, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.cyan }));
 
-    const tkX = 50, tkY = 26, tkW = 100, tkH = 210;
-    pg.add(new Konva.Rect({ x: tkX, y: tkY, width: tkW, height: tkH, fill: '#050e18', stroke: C.cyan + '66', strokeWidth: 2, cornerRadius: 4 }));
+    const tkX = 100, tkY = 26, tkW = 100, tkH = 210;
+    pg.add(new Konva.Rect({ x: tkX, y: tkY, width: tkW, height: tkH, fill: '#eeeff1', stroke: C.cyan + '66', strokeWidth: 2, cornerRadius: 4 }));
 
     cc._lvFill = new Konva.Rect({ x: tkX + 2, y: tkY + tkH - 2, width: tkW - 4, height: 0, fill: C.cyan + '77', cornerRadius: [0, 0, 3, 3] });
     pg.add(cc._lvFill);
@@ -609,56 +1192,44 @@ export function buildLevelPage(cc) {
     pg.add(cc._lvText);
 
     // 管道
-    pg.add(new Konva.Rect({ x: tkX - 36, y: tkY + 18, width: 36, height: 12, fill: '#081520', stroke: C.blue + '66', strokeWidth: 1 }));
+    pg.add(new Konva.Rect({ x: tkX - 36, y: tkY + 18, width: 36, height: 12, fill: '#eaf0f5', stroke: C.blue + '66', strokeWidth: 1 }));
     cc._inletFlowBar = new Konva.Rect({ x: tkX - 34, y: tkY + 20, width: 0, height: 8, fill: C.blue + '88' });
     pg.add(cc._inletFlowBar);
-    pg.add(new Konva.Text({ x: tkX - 50, y: tkY + 8, text: '进水', fontSize: 8, fontFamily: 'Courier New', fill: C.blue }));
+    pg.add(new Konva.Text({ x: tkX - 30, y: tkY + 8, text: '进水', fontSize: 8, fontFamily: 'Courier New', fill: C.blue }));
 
-    pg.add(new Konva.Rect({ x: tkX + tkW, y: tkY + tkH - 36, width: 36, height: 12, fill: '#081520', stroke: C.orange + '66', strokeWidth: 1 }));
-    cc._drainFlowBar = new Konva.Rect({ x: tkX + tkW + 2, y: tkY + tkH - 34, width: 0, height: 8, fill: C.orange + '88' });
+    pg.add(new Konva.Rect({ x: tkX + tkW, y: tkY + tkH - 36, width: 36, height: 12, fill: '#f4f5f7', stroke: C.orange + '66', strokeWidth: 1 }));
+    cc._drainFlowBar = new Konva.Rect({ x: tkX + tkW + 2, y: tkY + tkH - 34, width: 35, height: 8, fill: C.orange + '88' });
     pg.add(cc._drainFlowBar);
-    pg.add(new Konva.Text({ x: tkX + tkW + 2, y: tkY + tkH - 48, text: '排水', fontSize: 8, fontFamily: 'Courier New', fill: C.orange }));
+    pg.add(new Konva.Text({ x: tkX + tkW + 6, y: tkY + tkH - 18, text: '排水', fontSize: 8, fontFamily: 'Courier New', fill: C.orange }));
 
     // 右侧控制面板
-    const cx = 185;
-    pg.add(new Konva.Text({ x: cx, y: 22, text: '■ 控制参数', fontSize: 9, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.cyan }));
+    const cx = 285;
+    pg.add(new Konva.Text({ x: cx, y: 22, text: '■ 控制参数', fontSize: 12, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.cyan }));
 
     cc._lvParamTexts = {};
     [{ label: 'HH报警', key: 'setHH', color: C.red }, { label: 'H  上限', key: 'setH', color: C.yellow },
     { label: 'L  下限', key: 'setL', color: C.yellow }, { label: 'LL报警', key: 'setLL', color: C.red }].forEach((p, i) => {
-        const py = 38 + i * 24;
-        pg.add(new Konva.Text({ x: cx, y: py, text: p.label + ' :', fontSize: 9, fontFamily: 'Courier New', fill: p.color }));
-        const vt = new Konva.Text({ x: cx + 80, y: py, text: `${cc.levelCtrl[p.key]}%`, fontSize: 9, fontFamily: 'Courier New', fill: C.text });
+        const py = 42 + i * 22;
+        pg.add(new Konva.Text({ x: cx, y: py, text: p.label + ' :', fontSize: 12, fontFamily: 'Courier New', fill: p.color }));
+        const vt = new Konva.Text({ x: cx + 80, y: py, text: `${cc.levelCtrl[p.key]}%`, fontSize: 12, fontFamily: 'Courier New', fill: C.text });
         pg.add(vt);
         cc._lvParamTexts[p.key] = vt;
     });
 
-    pg.add(new Konva.Text({ x: cx, y: 140, text: '■ 执行机构', fontSize: 9, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.cyan }));
-    cc._pumpText = new Konva.Text({ x: cx, y: 156, text: '进水阀:  OFF ○', fontSize: 10, fontFamily: 'Courier New', fill: C.textDim });
-    cc._drainText = new Konva.Text({ x: cx, y: 174, text: '排水泵:  OFF ○', fontSize: 10, fontFamily: 'Courier New', fill: C.textDim });
-    cc._lvAlarmText = new Konva.Text({ x: cx, y: 198, text: '● 液位正常', fontSize: 10, fontFamily: 'Courier New', fill: C.green });
-    pg.add(cc._pumpText, cc._drainText, cc._lvAlarmText);
+    pg.add(new Konva.Text({ x: cx, y: 140, text: '■ 执行机构', fontSize: 12, fontFamily: 'Courier New', fontStyle: 'bold', fill: C.cyan }));
+    cc._pumpText = new Konva.Text({ x: cx, y: 162, text: '进水阀:  OFF ○', fontSize: 12, fontFamily: 'Courier New', fill: C.textDim });
+    cc._lvAlarmText = new Konva.Text({ x: cx, y: 190, text: '● 液位正常', fontSize: 12, fontFamily: 'Courier New', fill: C.green });
+    pg.add(cc._pumpText, cc._lvAlarmText);
 
     // 仿真控制
-    cc._simBtn = mkBtn(pg, '仿真:运行', cx, 222, C.cyan);
-    cc._simBtn.on('click tap', () => {
-        cc.levelCtrl.simMode = !cc.levelCtrl.simMode;
-        const r = cc.levelCtrl.simMode;
-        cc._simBtn.findOne('Rect').fill(r ? C.cyan + '33' : C.textDim + '22');
-        cc._simBtn.findOne('Rect').stroke(r ? C.cyan : C.textDim);
-        cc._simBtn.findOne('Text').text(r ? '仿真:运行' : '仿真:停止');
-        cc._simBtn.findOne('Text').fill(r ? C.cyan : C.textDim);
-    });
-
-    const manInBtn = mkBtn(pg, '进水:强制', cx + 115, 222, C.blue);
-    const manDrBtn = mkBtn(pg, '排水:强制', cx + 230, 222, C.orange);
-    manInBtn.on('click tap', () => { cc.levelCtrl.inletOn = !cc.levelCtrl.inletOn; });
-    manDrBtn.on('click tap', () => { cc.levelCtrl.drainOn = !cc.levelCtrl.drainOn; });
+    cc._simBtn = mkBtn(pg, '控制:自动', cx, 222, C.cyan);
+    cc._pumpBtn = mkBtn(pg, '进水泵:运行', cx + 115, 222, C.blue);
+    cc._switchBtn = mkBtn(pg, '液位开关:闭合', cx + 230, 222, C.orange);
 
     // 液位趋势
-    const trX = cx, trY = 252, trW = 350, trH = 50;
+    const trX = 50, trY = 270, trW = 570, trH = 150;
     pg.add(new Konva.Rect({ x: trX, y: trY, width: trW, height: trH, fill: C.bg, stroke: C.border, strokeWidth: 1, cornerRadius: 2 }));
-    pg.add(new Konva.Text({ x: trX + 3, y: trY + 2, text: 'LEVEL TREND', fontSize: 7, fontFamily: 'Courier New', fill: C.textDim }));
+    pg.add(new Konva.Text({ x: trX + 3, y: trY + 2, text: '液位趋势图', fontSize: 10, fontFamily: 'Courier New', fill: C.textDim }));
     cc._lvTrendLine = new Konva.Line({ stroke: C.cyan, strokeWidth: 1.5 });
     pg.add(cc._lvTrendLine);
     cc._lvTrendMeta = { x: trX, y: trY, w: trW, h: trH };

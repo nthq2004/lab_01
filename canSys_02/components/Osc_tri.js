@@ -137,7 +137,6 @@ export class Oscilloscope_tri extends BaseComponent {
     }
 
     updateTrace(vDiffs, iterCount) {
-        // if (this.isHold) return;
         if (iterCount % this.tScales[this.tIdx] !== 0) return;
 
         const centerY = -20;

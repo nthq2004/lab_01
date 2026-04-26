@@ -65,11 +65,24 @@ export const DeviceStamps = {
             if (dev._lastG === undefined) dev._lastG = dynamicG;
             dev._lastG = (dynamicG + dev._lastG) / 2;
             this._fill(ctx, G, B, cP, cN, dev._lastG);
+
+            console.log('transmitter_2wire');
+
+            if (dev.special ==='diff_level') {
+                console.log('注入电阻');
+                const lId = `${dev.id}_wire_l`;
+                const rId = `${dev.id}_wire_r`;
+                const cL = ctx.portToCluster.get(lId);
+                const cR = ctx.portToCluster.get(rId);
+                if (cL !== undefined && cR !== undefined) {
+                    this._fill(ctx, G, B, cL, cR, 1/250);
+                }
+            }
         });
     },
 
     // ─── 4. DC/AC 电源（诺顿等效：电流源 + 内阻并联） ──────────────────
-    stampPowerSources(ctx, G, B, powerDevs, currentVSourceIdx, currentTime) {
+    stampPowerSources(ctx, G, B, powerDevs, currentTime) {
         powerDevs.forEach((dev, idx) => {
             const pId = `${dev.id}_wire_p`;
             const nId = `${dev.id}_wire_n`;
@@ -92,7 +105,7 @@ export const DeviceStamps = {
     },
 
     // ─── 5. 三相电源（诺顿等效：每相都是电流源 + 内阻并联） ──────────────
-    stampPower3Sources(ctx, G, B, power3Devs, currentVSourceIdx, currentTime) {
+    stampPower3Sources(ctx, G, B, power3Devs, currentTime) {
         power3Devs.forEach((dev, idx) => {
             ['u', 'v', 'w'].forEach((phase, phaseIdx) => {
                 const pId = `${dev.id}_wire_${phase}`;
@@ -159,8 +172,9 @@ export const DeviceStamps = {
             // 4-20mA 输入回路：pi1(24V馈电) + ni1(250Ω内阻)
             const cPi1 = ctx.portToCluster.get(`${p}pi1`);
             const cNi1 = ctx.portToCluster.get(`${p}ni1`);
-            if (cPi1 !== undefined)
+            if (cPi1 !== undefined) {
                 this._addV(ctx, G, B, cPi1, -1, 24.0, currentVSourceIdx++);
+            }
             if (cNi1 !== undefined)
                 this._fill(ctx, G, B, cNi1, -1, 1 / 250);
 
@@ -212,7 +226,7 @@ export const DeviceStamps = {
     },
 
     // ─── 7. 热电偶（诺顿等效：电流源 + 内阻并联） ──────────────────
-    stampThermocouples(ctx, G, B, tcDevs, currentVSourceIdx) {
+    stampThermocouples(ctx, G, B, tcDevs) {
         tcDevs.forEach(tc => {
             const cP = ctx.portToCluster.get(`${tc.id}_wire_r`);
             const cN = ctx.portToCluster.get(`${tc.id}_wire_l`);
@@ -240,15 +254,11 @@ export const DeviceStamps = {
 
             if (cOut !== undefined) {
                 const outM = ctx.nodeMap.get(cOut);
-
-                // 输出 0.2Ω 源电阻（导纳 = 1/0.2 = 5 S）
-                if (outM !== undefined) {
-                    this._fill(ctx, G, B, cOut, cOut, 5);
-                }
-
+                // 这是 电流索引所在列，节点电流方程引入电压源的电流，留出填+1，另一端是相对地的。
                 if (outM !== undefined) G[outM][opVIdx] += 1;
 
                 if (op.internalState === 'linear') {
+                    // 线性状态下，out - gain(vP - vN) =0  ，填充电流索引所在行，out =+1, vP = -gain,vN = +gain.
                     if (outM !== undefined) G[opVIdx][outM] = 1;
                     const pM = ctx.nodeMap.get(cP), nM = ctx.nodeMap.get(cN);
                     if (pM !== undefined) G[opVIdx][pM] -= op.gain;
@@ -256,10 +266,12 @@ export const DeviceStamps = {
                     if (nM !== undefined) G[opVIdx][nM] += op.gain;
                     else if (ctx.vPosMap.has(cN)) B[opVIdx] -= op.gain * ctx.vPosMap.get(cN);
                 } else {
+                    // 非线性状态下，out = 饱和值，是一个电压源，填入电流相量的电压源部分。
                     if (outM !== undefined) G[opVIdx][outM] = 1;
                     B[opVIdx] = (op.internalState === 'pos_sat') ? op.vPosLimit : op.vNegLimit;
                 }
             }
+            //op.currentIdx是解相量中 电压源电流的 节点索引，可以在 results【op.currentIdx】获得电流的解。
             op.currentIdx = opVIdx++;
         });
         return opVIdx;
@@ -275,13 +287,14 @@ export const DeviceStamps = {
             const vA = ctx.getVoltageFromResults(results, cA);
             const vC = ctx.getVoltageFromResults(results, cC);
             const vDiff = vA - vC;
-
+            //导通时，看成导通电压和导通电阻串联
             if (vDiff > dev.vForward) {
                 const gOn = 1 / (dev.rOn || 0.5);
                 const iEq = dev.vForward * gOn;
                 this._fill(ctx, G, B, cA, cC, gOn);
                 this._addI(ctx, B, cA, cC, iEq);
             } else {
+                //未导通，注入1000M电阻
                 this._fill(ctx, G, B, cA, cC, 1 / (dev.rOff || 1e9));
             }
         });
@@ -318,7 +331,7 @@ export const DeviceStamps = {
                     this._fill(ctx, G, B, cB, cC, 1 / 1e9);
                 }
             } else {
-                const model = dev.getCompanionModel(vB, vC, vE) || { matrix: {}, currents: {} };
+                const model = dev.getCompanionModel(vB, vC, vE);
                 MNAMatrix.fillBJTMatrix(G, B, ctx.nodeMap, cC, cB, cE, model);
             }
         });
@@ -332,7 +345,7 @@ export const DeviceStamps = {
             const cS = ctx.portToCluster.get(`${dev.id}_wire_s`);
 
             if (cG !== undefined) this._fill(ctx, G, B, cG, -1, 1e-12);
-
+            // 等效为一个压控电阻，导通时电阻很小。
             if (cD !== undefined && cS !== undefined) {
                 const vG = ctx.getVoltageFromResults(results, cG) || 0;
                 const vS = ctx.getVoltageFromResults(results, cS) || 0;
@@ -375,10 +388,12 @@ export const DeviceStamps = {
 
             if (cOutP !== undefined && cOutN !== undefined) {
                 const k = dev.outputRatio || 0;
+                //这是电流索引所在列，流进为+1，流出为-1
                 if (mOutP !== undefined) G[mOutP][ptVIdx] += 1;
                 if (mOutN !== undefined) G[mOutN][ptVIdx] -= 1;
 
                 if (mOutP !== undefined) G[ptVIdx][mOutP] += 1;
+                // 如果该节点电压已知，outP - outN -k(inP - inN) =0，把outP 移到最右边，电流相量对应索引行，放已知的电源电压。
                 else if (ctx.vPosMap.has(cOutP)) B[ptVIdx] -= ctx.vPosMap.get(cOutP);
 
                 if (mOutN !== undefined) G[ptVIdx][mOutN] -= 1;
@@ -392,6 +407,7 @@ export const DeviceStamps = {
 
                 this._fill(ctx, G, B, cInP, cInN, 1e-9); // Gmin 防奇异
             } else {
+                // 1*电流 = 0；
                 G[ptVIdx][ptVIdx] = 1;
             }
             dev.currentIdx = ptVIdx++;
@@ -429,8 +445,16 @@ export const DeviceStamps = {
             const c1 = ctx.portToCluster.get(`${dev.id}_wire_l`);
             const c2 = ctx.portToCluster.get(`${dev.id}_wire_r`);
             const R = dev.currentResistance || 1000;
-            if (c1 !== undefined && c2 !== undefined && R > 0.1)
+            if (c1 !== undefined && c2 !== undefined)
                 this._fill(ctx, G, B, c1, c2, 1 / R);
+
+            const cCOM = ctx.portToCluster.get(`${dev.id}_wire_COM`);
+            const cNO = ctx.portToCluster.get(`${dev.id}_wire_NO`);
+            if (cCOM !== undefined && cNO !== undefined) {
+                const R = dev.isEnergized ? 0.01 : 1e9;
+                this._fill(ctx, G, B, cCOM, cNO, 1 / R);
+            }
+
         });
     },
 
@@ -504,8 +528,8 @@ export const DeviceStamps = {
             const c_ch3n = ctx.portToCluster.get(`${p}ch3n`);
             if (c_ch3p !== undefined && c_ch3n !== undefined) {
                 // 诺顿等效
-                const rFeed = 1000;
-                const vFeed = 1.0;
+                const rFeed = 10000;
+                const vFeed = 10;
                 this._fill(ctx, G, B, c_ch3p, c_ch3n, 1 / rFeed);
                 const iEq = vFeed / rFeed;
                 this._addI(ctx, B, c_ch3p, c_ch3n, iEq);
@@ -519,7 +543,7 @@ export const DeviceStamps = {
                 // 注入高阻输入（1MΩ），防止漏电流
                 this._fill(ctx, G, B, c_ch4p, c_ch4n, 1 / 1000000);
             }
-
+            // ---在线路上注入电压，模拟CAN总线工作的状态。
             if (c_can1p !== undefined && c_can1n !== undefined) {
                 this._addV(ctx, G, B, c_can1p, cGnd, 2.5 + 0.2 * ai.sys.canBus._busLoad, currentVSourceIdx++);
                 this._addV(ctx, G, B, c_can1n, cGnd, 2.5 - 0.2 * ai.sys.canBus._busLoad, currentVSourceIdx++);
@@ -585,7 +609,6 @@ export const DeviceStamps = {
                     case 'SRC_LOOP':
                         // 注入一个变化的电导
                         if (cSMa !== undefined && cSCom !== undefined) {
-
                             const lastV = pc._lastVDiff !== undefined ? pc._lastVDiff : 0;
                             let dynamicG;
                             if (lastV < 10) {
@@ -602,6 +625,7 @@ export const DeviceStamps = {
                         break;
                     case 'SRC_V':
                         if (cSV !== undefined && cSCom !== undefined) {
+                            pc.currentIdx = currentVSourceIdx;
                             this._addV(ctx, G, B, cSV, cSCom, pc.sourceValue, currentVSourceIdx++);
                         }
                         break;
@@ -635,8 +659,6 @@ export const DeviceStamps = {
                         if (cSV !== undefined && cSCom !== undefined) {
                             const voltage = pc.getSourceValue(currentTime);
                             const rOn = pc.rOn || 0.1;
-                            console.log(voltage);
-
                             // 诺顿等效：
                             // 1. 填充内阻导纳到 G 矩阵（p 到 n 之间）
                             this._fill(ctx, G, B, cSV, cSCom, 1 / rOn);
@@ -650,6 +672,167 @@ export const DeviceStamps = {
             }
         });
         return currentVSourceIdx;
-    }
+    },
+    // ─── 19. AO 模块（模拟量输出） ────────────────────────────────────
+    stampAO(ctx, G, B, aoDevs, currentVSourceIdx) {
+        aoDevs.forEach(ao => {
 
+            const p = `${ao.id}_wire_`;
+            const c_can1p = ctx.portToCluster.get(`${p}can1p`);
+            const c_can1n = ctx.portToCluster.get(`${p}can1n`);
+            const c_can2p = ctx.portToCluster.get(`${p}can2p`);
+            const c_can2n = ctx.portToCluster.get(`${p}can2n`);
+            // ── CAN1 和 CAN2：终端电阻注入（当 termEnabled 有效时） ────
+            if (ao.termEnabled) {
+                if (c_can1p !== undefined && c_can1n !== undefined) {
+                    // 注入 120Ω 终端电阻
+                    this._fill(ctx, G, B, c_can1p, c_can1n, 1 / 120);
+                }
+                if (c_can2p !== undefined && c_can2n !== undefined) {
+                    // 注入 120Ω 终端电阻
+                    this._fill(ctx, G, B, c_can2p, c_can2n, 1 / 120);
+                }
+            }
+            if (!ao.powerOn) return;
+
+            // VCC 和 GND 之间：注入电源内阻 50Ω（保持电源稳定）
+            const cVcc = ctx.portToCluster.get(`${p}vcc`);
+            const cGnd = ctx.portToCluster.get(`${p}gnd`);
+            if (cVcc !== undefined && cGnd !== undefined) {
+                this._fill(ctx, G, B, cVcc, cGnd, 1 / 50);  // 50Ω 电源内阻
+            }
+
+            // ── CH1 (4-20mA) ──────────────────────────────────────────
+            // 结构：电压源注入 - 在 ch1p 端口直接注入 24V 电压源
+            const c_ch1p = ctx.portToCluster.get(`${p}ch1p`);
+            const c_ch1n = ctx.portToCluster.get(`${p}ch1n`);
+            if (c_ch1p !== undefined && c_ch1n !== undefined) {
+                this._addI(ctx, B, c_ch1p, c_ch1n, ao.channels.ch1.actual / 1000);
+            }
+
+            // ── CH2 (4-20mA) ──────────────────────────────────────────
+            const c_ch2p = ctx.portToCluster.get(`${p}ch2p`);
+            const c_ch2n = ctx.portToCluster.get(`${p}ch2n`);
+            if (c_ch2p !== undefined && c_ch2n !== undefined) {
+                this._addI(ctx, B, c_ch2p, c_ch2n, ao.channels.ch2.actual / 1000);
+            }
+
+            // ── CH3 (PWM) ────────────────────────────────────────
+            // PWM电压输出。
+            const c_ch3p = ctx.portToCluster.get(`${p}ch3p`);
+            const c_ch3n = ctx.portToCluster.get(`${p}ch3n`);
+            if (c_ch3p !== undefined && c_ch3n !== undefined) {
+                const instantV = ao.channels.ch3.instantOn ? 24 : 0;
+                this._addV(ctx, G, B, c_ch3p, c_ch3n, instantV, currentVSourceIdx++);
+            }
+
+            // ── CH4 (PWM) ────────────────────────────────────────
+            const c_ch4p = ctx.portToCluster.get(`${p}ch4p`);
+            const c_ch4n = ctx.portToCluster.get(`${p}ch4n`);
+            if (c_ch4p !== undefined && c_ch4n !== undefined) {
+                const instantV = ao.channels.ch4.instantOn ? 24 : 0;
+                this._addV(ctx, G, B, c_ch4p, c_ch4n, instantV, currentVSourceIdx++);
+            }
+
+        });
+        return currentVSourceIdx;
+    },
+
+    // ─── 20. DI模块 ───────────────────────────────────────────────
+    stampDI(ctx, G, B, diDevs) {
+        diDevs.forEach(di => {
+            const p = `${di.id}_wire_`;
+            const c_can1p = ctx.portToCluster.get(`${p}can1p`);
+            const c_can1n = ctx.portToCluster.get(`${p}can1n`);
+            const c_can2p = ctx.portToCluster.get(`${p}can2p`);
+            const c_can2n = ctx.portToCluster.get(`${p}can2n`);
+            // ── CAN1 和 CAN2：终端电阻注入（当 termEnabled 有效时） ────
+            if (di.termEnabled) {
+                if (c_can1p !== undefined && c_can1n !== undefined) {
+                    // 注入 120Ω 终端电阻
+                    this._fill(ctx, G, B, c_can1p, c_can1n, 1 / 120);
+                }
+                if (c_can2p !== undefined && c_can2n !== undefined) {
+                    // 注入 120Ω 终端电阻
+                    this._fill(ctx, G, B, c_can2p, c_can2n, 1 / 120);
+                }
+            }
+            if (!di.powerOn) return;
+            // VCC 和 GND 之间：注入电源内阻 50Ω（保持电源稳定）
+            const cVcc = ctx.portToCluster.get(`${p}vcc`);
+            const cGnd = ctx.portToCluster.get(`${p}gnd`);
+            if (cVcc !== undefined && cGnd !== undefined) {
+                this._fill(ctx, G, B, cVcc, cGnd, 1 / 50);  // 50Ω 电源内阻
+            }
+        });
+
+    },
+    // ─── 21. DI模块 ───────────────────────────────────────────────
+    stampDO(ctx, G, B, doDevs, currentVSourceIdx) {
+        doDevs.forEach(dev => {
+            const p = `${dev.id}_wire_`;
+            const c_can1p = ctx.portToCluster.get(`${p}can1p`);
+            const c_can1n = ctx.portToCluster.get(`${p}can1n`);
+            const c_can2p = ctx.portToCluster.get(`${p}can2p`);
+            const c_can2n = ctx.portToCluster.get(`${p}can2n`);
+            // ── CAN1 和 CAN2：终端电阻注入（当 termEnabled 有效时） ────
+            if (dev.termEnabled) {
+                if (c_can1p !== undefined && c_can1n !== undefined) {
+                    // 注入 120Ω 终端电阻
+                    this._fill(ctx, G, B, c_can1p, c_can1n, 1 / 120);
+                }
+                if (c_can2p !== undefined && c_can2n !== undefined) {
+                    // 注入 120Ω 终端电阻
+                    this._fill(ctx, G, B, c_can2p, c_can2n, 1 / 120);
+                }
+            }
+            if (!dev.powerOn) return;
+            // VCC 和 GND 之间：注入电源内阻 50Ω（保持电源稳定）
+            const cVcc = ctx.portToCluster.get(`${p}vcc`);
+            const cGnd = ctx.portToCluster.get(`${p}gnd`);
+            if (cVcc !== undefined && cGnd !== undefined) {
+                this._fill(ctx, G, B, cVcc, cGnd, 1 / 50);  // 50Ω 电源内阻
+            }
+            // ── CH1 (电阻注入) ──────────────────────────────────────────
+            // 导通时0.01，不导通时1000000
+            const c_ch1p = ctx.portToCluster.get(`${p}ch1p`);
+            const c_ch1n = ctx.portToCluster.get(`${p}ch1n`);
+            if (c_ch1p !== undefined && c_ch1n !== undefined) {
+                const instantR = dev.channels.ch1.state ? 0.01 : 1e9;
+                this._fill(ctx, G, B, c_ch1p, c_ch1n, 1 / instantR);
+            }
+
+            // ── CH2 (电阻注入) ──────────────────────────────────────────
+            const c_ch2p = ctx.portToCluster.get(`${p}ch2p`);
+            const c_ch2n = ctx.portToCluster.get(`${p}ch2n`);
+            if (c_ch2p !== undefined && c_ch2n !== undefined) {
+                const instantR = dev.channels.ch2.state ? 0.01 : 1e9;
+                this._fill(ctx, G, B, c_ch2p, c_ch2n, 1 / instantR);
+            }
+
+            // ── CH3 (PNP24V 输出) ────────────────────────────────────────
+            const c_ch3p = ctx.portToCluster.get(`${p}ch3p`);
+            const c_ch3n = ctx.portToCluster.get(`${p}ch3n`);
+            if (c_ch3p !== undefined && c_ch3n !== undefined) {
+                if (dev.channels.ch3.state)
+                    this._addV(ctx, G, B, c_ch3p, c_ch3n, 24, currentVSourceIdx++);
+                else {
+                    this._fill(ctx, G, B, c_ch3p, c_ch3n, 1 / 1e9);
+                    currentVSourceIdx++;
+                }
+            }
+
+            // ── CH4 (PWM) ────────────────────────────────────────
+            const c_ch4p = ctx.portToCluster.get(`${p}ch4p`);
+            const c_ch4n = ctx.portToCluster.get(`${p}ch4n`);
+            if (c_ch4p !== undefined && c_ch4n !== undefined) {
+                if (dev.channels.ch4.state)
+                    this._addV(ctx, G, B, c_ch4p, c_ch4n, 24, currentVSourceIdx++);
+                else {
+                    this._fill(ctx, G, B, c_ch4p, c_ch4n, 1 / 1e6);
+                    currentVSourceIdx++;
+                }
+            }
+        });
+    }
 };

@@ -81,7 +81,7 @@ export class Transistor extends BaseComponent {
         const vbe = (vB - vE) * pol;
         const vce = (vC - vE) * pol;
 
-        // --- 1. 基极回路 (BE 结) ---
+        // --- 1. 基极回路 (BE 结) ---诺顿等效--0.7V的恒压源和0.5欧姆的内阻。
         // 使用简单的线性化模型：Vbe > 0.7V 导通，否则截止
         const V_ON = 0.7;
         const G_ON = 2; // 导通电导
@@ -89,7 +89,7 @@ export class Transistor extends BaseComponent {
         const iBE = (vbe > V_ON) ? -V_ON * G_ON : 0;
 
         // --- 2. 软饱和控制 (关键) ---
-        // multiplier 在 Vce=0.2V 时约 0.6，Vce=0V 时为 0
+        // multiplier 在 Vce=0.2V 时约 0.6，Vce=0V 时为 0，VCE越小，放大倍数越小
         // 这种平滑过渡是矩阵收敛的救星
         const saturationMultiplier = Math.tanh(Math.max(0, vce) / 0.2);
         const currentBeta = beta * saturationMultiplier;
@@ -99,6 +99,7 @@ export class Transistor extends BaseComponent {
         const V_SAT = 0.2;
         let gCE_sat = 0;
         if (vbe > V_ON) {
+            //放大倍数大，电导越小，对一个的电阻越大。
             gCE_sat = G_ON * (1 - saturationMultiplier);
         }
         // 极端情况：如果 VC 真的变负了，强制用超大电导顶住

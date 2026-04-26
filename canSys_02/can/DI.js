@@ -23,14 +23,12 @@ const W = 200;
 const H = 340;
 
 const CH_CONFIG = [
-    { id: 'ch1', label: 'CH1', type: 'DRY',  desc: 'Dry NC' },
-    { id: 'ch2', label: 'CH2', type: 'DRY',  desc: 'Dry NC' },
-    { id: 'ch3', label: 'CH3', type: 'WET',  desc: 'Wet 24V'     },
-    { id: 'ch4', label: 'CH4', type: 'WET',  desc: 'Wet 24V'     },
+    { id: 'ch1', label: 'CH1', type: 'DRY', desc: 'Dry NC' },
+    { id: 'ch2', label: 'CH2', type: 'DRY', desc: 'Dry NC' },
+    { id: 'ch3', label: 'CH3', type: 'WET', desc: 'Wet 24V' },
+    { id: 'ch4', label: 'CH4', type: 'WET', desc: 'Wet 24V' },
 ];
 
-// CAN 功能码 0x03 = DI
-const CAN_FUNC_DI = 0x03;
 
 // 消抖时间 (ms)
 const DEBOUNCE_MS = 20;
@@ -46,12 +44,19 @@ export class DIModule extends BaseComponent {
         this.w = W;
         this.h = H;
         this.scale = 1.35;
-        this.type  = 'DI';
+        this.type = 'DI';
+        this.special ='can';
         this.cache = 'fixed';
 
-        this.powerOn     = false;
+        this.powerOn = false;
+        this.isBreak = false; // 线路断开状态（模拟电源断开或输出回路故障）
+        this.commFault = false; // 通信故障标志
+        this.moduleFault = false; // 模块故障标志（如过温、内部错误等）
+        this.channelFault = false; // 通道1故障状态
+
         this.nodeAddress = (config && config.nodeAddress != null) ? config.nodeAddress : 3;
         this.termEnabled = false;
+        this.currentResistance = 1000000; // 120Ω 或 ∞
 
         // ── 通道数据 ──
         // state:      当前稳定逻辑状态 (true=闭合/ON)
@@ -74,10 +79,10 @@ export class DIModule extends BaseComponent {
         // ── 报警配置（可由中央计算机下发修改）──
         // trigger: 'ON'=闭合报警, 'OFF'=断开报警, 'NONE'=不报警
         this.alarmConfig = {
-            ch1: { trigger: 'OFF',  label: 'CH1 ALARM' },
-            ch2: { trigger: 'OFF',  label: 'CH2 ALARM' },
-            ch3: { trigger: 'ON',  label: 'CH3 ALARM' },
-            ch4: { trigger: 'ON',  label: 'CH4 ALARM' },
+            ch1: { trigger: 'OFF', label: 'CH1 ALARM' },
+            ch2: { trigger: 'OFF', label: 'CH2 ALARM' },
+            ch3: { trigger: 'ON', label: 'CH3 ALARM' },
+            ch4: { trigger: 'ON', label: 'CH4 ALARM' },
         };
 
         // ── 模块状态灯 ──
@@ -85,14 +90,17 @@ export class DIModule extends BaseComponent {
 
         // ── CAN 总线状态 ──
         this.canBusConnected = false;
-        this.lastTxTime     = 0;
-        this.lastRxTime     = 0;
-        this.txCount        = 0;
-        this.rxCount        = 0;
-        this.txInterval     = 200;  // ms，周期上报
-        this._txOnChange    = true; // 状态变化时立即上报
+        this.lastTxTime = 0;
+        this.lastRxTime = 0;
+        this.txCount = 0;
+        this.rxCount = 0;
+        this.txInterval = 200;  // ms，周期上报
+        this._txOnChange = true; // 状态变化时立即上报
+        this.heartbeatTimeout = 5000; // ms，心跳超时判定
 
-        this.comErrorCount  = 0;
+        this.busConnected = false;
+        this.comErrorCount = 0;
+
 
         // ── NMT 网络管理状态机 ──
         this.nmtState = NMT_STATE.INIT;
@@ -124,12 +132,12 @@ export class DIModule extends BaseComponent {
         const sg = this.scaleGroup;
         const railAttr = { width: 18, height: H, fill: '#9e9e9e', stroke: '#555', strokeWidth: 1.5, cornerRadius: 2 };
         sg.add(new Konva.Rect({ x: -18, y: 0, ...railAttr }));
-        sg.add(new Konva.Rect({ x: W,   y: 0, ...railAttr }));
+        sg.add(new Konva.Rect({ x: W, y: 0, ...railAttr }));
         sg.add(new Konva.Rect({
             x: 0, y: 0, width: W, height: H,
-            fillLinearGradientStartPoint:  { x: 0, y: 0 },
-            fillLinearGradientEndPoint:    { x: W, y: 0 },
-            fillLinearGradientColorStops:  [0, '#2c2c2c', 0.5, '#3a3a3a', 1, '#2c2c2c'],
+            fillLinearGradientStartPoint: { x: 0, y: 0 },
+            fillLinearGradientEndPoint: { x: W, y: 0 },
+            fillLinearGradientColorStops: [0, '#2c2c2c', 0.5, '#3a3a3a', 1, '#2c2c2c'],
             stroke: '#222', strokeWidth: 3, cornerRadius: 3
         }));
         // 顶部装饰条：绿色（DI）
@@ -150,22 +158,22 @@ export class DIModule extends BaseComponent {
 
     _drawChannelRows() {
         this._chDisplays = {};
-        this._chLEDs     = {};
+        this._chLEDs = {};
 
         CH_CONFIG.forEach((ch, i) => {
-            const y  = 44 + i * 52;
+            const y = 44 + i * 52;
             const sg = this.scaleGroup;
 
             // 通道背景框
             sg.add(new Konva.Rect({ x: 4, y, width: W - 8, height: 48, fill: '#0a0a0a', stroke: '#333', strokeWidth: 1, cornerRadius: 2 }));
 
             // 通道标签
-            sg.add(new Konva.Text({ x: 8, y: y + 4,  text: ch.label, fontSize: 10, fontStyle: 'bold', fill: '#ef1313' }));
-            sg.add(new Konva.Text({ x: 8, y: y + 16, text: ch.desc,  fontSize: 7,  fill: '#555' }));
+            sg.add(new Konva.Text({ x: 8, y: y + 4, text: ch.label, fontSize: 10, fontStyle: 'bold', fill: '#ef1313' }));
+            sg.add(new Konva.Text({ x: 8, y: y + 16, text: ch.desc, fontSize: 7, fill: '#555' }));
 
             // 接点类型标记（DRY / WET 色块）
             const typeColor = ch.type === 'DRY' ? '#1a3a1a' : '#1a2a3a';
-            const typeFg    = ch.type === 'DRY' ? '#00cc55' : '#00aaff';
+            const typeFg = ch.type === 'DRY' ? '#00cc55' : '#00aaff';
             sg.add(new Konva.Rect({ x: 8, y: y + 28, width: 28, height: 12, fill: typeColor, stroke: typeFg, strokeWidth: 0.5, cornerRadius: 1 }));
             sg.add(new Konva.Text({ x: 8, y: y + 29, text: ch.type, fontSize: 7, fill: typeFg, width: 28, align: 'center' }));
 
@@ -198,16 +206,16 @@ export class DIModule extends BaseComponent {
             sg.add(cntText);
 
             this._chDisplays[ch.id] = { bg: dispBg, state: stateText, volt: voltText, alm: almText, cnt: cntText };
-            this._chLEDs[ch.id]     = led;
+            this._chLEDs[ch.id] = led;
         });
     }
 
     _drawStatusLEDs() {
-        const sg   = this.scaleGroup;
-        const y    = 256;
+        const sg = this.scaleGroup;
+        const y = 256;
         const defs = [
-            { id: 'pwr', label: 'PWR', color: '#00ff00', x: 14  },
-            { id: 'run', label: 'RUN', color: '#00ff00', x: 58  },
+            { id: 'pwr', label: 'PWR', color: '#00ff00', x: 14 },
+            { id: 'run', label: 'RUN', color: '#00ff00', x: 58 },
             { id: 'flt', label: 'FLT', color: '#ff3300', x: 102 },
             { id: 'com', label: 'COM', color: '#00aaff', x: 146 },
         ];
@@ -215,7 +223,7 @@ export class DIModule extends BaseComponent {
         sg.add(new Konva.Text({ x: 8, y: y - 8, text: '状态指示灯', fontSize: 8, fill: '#f5eeee' }));
         this._statusLEDs = {};
         defs.forEach(d => {
-            const dot = new Konva.Circle({ x: d.x+10, y: y + 10, radius: 5, fill: '#222', stroke: '#111', strokeWidth: 1 });
+            const dot = new Konva.Circle({ x: d.x + 10, y: y + 10, radius: 5, fill: '#222', stroke: '#111', strokeWidth: 1 });
             const txt = new Konva.Text({ x: d.x - 4, y: y + 16, text: d.label, fontSize: 7, fill: '#f2ecec', width: 28, align: 'center' });
             this._statusLEDs[d.id] = { dot, color: d.color };
             sg.add(dot, txt);
@@ -223,8 +231,8 @@ export class DIModule extends BaseComponent {
     }
 
     _drawAddressSwitch() {
-        const sg  = this.scaleGroup;
-        const y   = 288;
+        const sg = this.scaleGroup;
+        const y = 288;
         const swW = 18, gap = 22;
 
         sg.add(new Konva.Rect({ x: 4, y: y - 2, width: W - 8, height: 38, fill: '#0a0a0a', stroke: '#333', strokeWidth: 1, cornerRadius: 2 }));
@@ -233,15 +241,22 @@ export class DIModule extends BaseComponent {
         this._swObjs = [];
         for (let i = 0; i < 4; i++) {
             const bitVal = 1 << i;
-            const x0     = 14 + i * gap;
-            const isOn   = (this.nodeAddress & bitVal) !== 0;
+            const x0 = 14 + i * gap;
+            const isOn = (this.nodeAddress & bitVal) !== 0;
             const swBg = new Konva.Rect({ x: x0, y: y + 8, width: swW, height: 26, fill: '#1a1a1a', stroke: '#444', strokeWidth: 1, cornerRadius: 2 });
             const knob = new Konva.Rect({ x: x0 + 3, y: isOn ? y + 10 : y + 22, width: swW - 6, height: 10, fill: isOn ? '#ffcc00' : '#333', stroke: '#555', strokeWidth: 1, cornerRadius: 1 });
-            const lbl  = new Konva.Text({ x: x0, y: y + 35, text: `SW${i + 1}`, fontSize: 6, fill: '#fcf8f8', width: swW, align: 'center' });
-            const vLbl = new Konva.Text({ x: x0, y: y + 8,  text: bitVal.toString(), fontSize: 6, fill: '#444', width: swW, align: 'center' });
+            const lbl = new Konva.Text({ x: x0, y: y + 35, text: `SW${i + 1}`, fontSize: 6, fill: '#fcf8f8', width: swW, align: 'center' });
+            const vLbl = new Konva.Text({ x: x0, y: y + 12, text: bitVal.toString(), fontSize: 6, fill: '#444', width: swW, align: 'center' });
             swBg.on('click tap', () => {
                 if (this.nodeAddress & bitVal) this.nodeAddress &= ~bitVal;
-                else                           this.nodeAddress |=  bitVal;
+                else this.nodeAddress |= bitVal;
+                this._refreshSwitches();
+                this._nodeAddrDisplay.text(`NODE:${String(this.nodeAddress).padStart(2, '0')}`);
+                this._refreshCache();
+            });
+            vLbl.on('click tap', () => {
+                if (this.nodeAddress & bitVal) this.nodeAddress &= ~bitVal;
+                else this.nodeAddress |= bitVal;
                 this._refreshSwitches();
                 this._nodeAddrDisplay.text(`NODE:${String(this.nodeAddress).padStart(2, '0')}`);
                 this._refreshCache();
@@ -249,19 +264,20 @@ export class DIModule extends BaseComponent {
             this._swObjs.push({ knob, bitVal, y0: y });
             sg.add(swBg, knob, lbl, vLbl);
         }
-        this._addrDecText = new Konva.Text({ x: 80, y: y + 10, text: String(this.nodeAddress), fontSize: 10, fontFamily: 'Courier New', fill: '#ffcc00', width: 30, align: 'right' });
+        this._addrDecText = new Konva.Text({ x: 106, y: y + 10, text: String(this.nodeAddress), fontSize: 10, fontFamily: 'Courier New', fill: '#ffcc00', width: 30, align: 'left' });
         sg.add(this._addrDecText);
     }
 
     _drawTermSwitch() {
         const sg = this.scaleGroup;
         const x0 = 160, y0 = 288;
-        sg.add(new Konva.Text({ x: x0-2, y: y0 - 6, text: '终端电阻', fontSize: 8, fill: '#f4efef' }));
-        const termBg   = new Konva.Rect({ x: x0 + 2, y: y0 + 8, width: 24, height: 26, fill: '#1a1a1a', stroke: '#444', strokeWidth: 1, cornerRadius: 2 });
+        sg.add(new Konva.Text({ x: x0 - 2, y: y0 - 6, text: '终端电阻', fontSize: 8, fill: '#f4efef' }));
+        const termBg = new Konva.Rect({ x: x0 + 2, y: y0 + 8, width: 24, height: 26, fill: '#1a1a1a', stroke: '#444', strokeWidth: 1, cornerRadius: 2 });
         this._termKnob = new Konva.Rect({ x: x0 + 5, y: y0 + 22, width: 18, height: 10, fill: '#333', stroke: '#555', strokeWidth: 1, cornerRadius: 1 });
-        const termLbl  = new Konva.Text({ x: x0, y: y0 + 35, text: '120Ω', fontSize: 6, fill: '#f5f2f2', width: 32, align: 'center' });
+        const termLbl = new Konva.Text({ x: x0, y: y0 + 35, text: '120Ω', fontSize: 6, fill: '#f5f2f2', width: 32, align: 'center' });
         termBg.on('click tap', () => {
             this.termEnabled = !this.termEnabled;
+            this.currentResistance = this.termEnabled ? 120 : 1000000;
             this._termKnob.y(this.termEnabled ? y0 + 10 : y0 + 22);
             this._termKnob.fill(this.termEnabled ? '#00aaff' : '#333');
             this._refreshCache();
@@ -282,7 +298,7 @@ export class DIModule extends BaseComponent {
             const y = 44 + i * 52 + 14;
             // 干接点：COM / IN；湿接点：+ / -
             const labels = ch.type === 'DRY' ? ['IN', 'COM'] : ['24V+', 'COM'];
-            sg.add(new Konva.Text({ x: -44, y,      text: `${ch.label} ${labels[0]}`, fontSize: 7, fill: '#0d05f2' }));
+            sg.add(new Konva.Text({ x: -44, y, text: `${ch.label} ${labels[0]}`, fontSize: 7, fill: '#0d05f2' }));
             sg.add(new Konva.Text({ x: -44, y: y + 14, text: `${ch.label} ${labels[1]}`, fontSize: 7, fill: '#0d05f2' }));
         });
         sg.add(new Konva.Text({ x: W + 2, y: 10, text: 'VCC', fontSize: 7, fill: '#0d05f2' }));
@@ -298,12 +314,12 @@ export class DIModule extends BaseComponent {
             this.addPort(-18 * this.scale, (yBase + 12) * this.scale, `${ch.id}p`, 'wire', 'p');
             this.addPort(-18 * this.scale, (yBase + 38) * this.scale, `${ch.id}n`, 'wire');
         });
-        this.addPort((W + 18) * this.scale, 12 * this.scale, 'vcc',  'wire', 'p');
-        this.addPort((W + 18) * this.scale, 38 * this.scale, 'gnd',  'wire');
-        this.addPort(35  * this.scale, (H + 20) * this.scale, 'can1h', 'wire', 'p');
-        this.addPort(80  * this.scale, (H + 20) * this.scale, 'can1l', 'wire');
-        this.addPort(125 * this.scale, (H + 20) * this.scale, 'can2h', 'wire','p');
-        this.addPort(170 * this.scale, (H + 20) * this.scale, 'can2l', 'wire');
+        this.addPort((W + 18) * this.scale, 12 * this.scale, 'vcc', 'wire', 'p');
+        this.addPort((W + 18) * this.scale, 38 * this.scale, 'gnd', 'wire');
+        this.addPort(35 * this.scale, (H + 20) * this.scale, 'can1p', 'wire', 'p');
+        this.addPort(80 * this.scale, (H + 20) * this.scale, 'can1n', 'wire');
+        this.addPort(125 * this.scale, (H + 20) * this.scale, 'can2p', 'wire', 'p');
+        this.addPort(170 * this.scale, (H + 20) * this.scale, 'can2n', 'wire');
     }
 
     // ══════════════════════════════════════════
@@ -334,11 +350,13 @@ export class DIModule extends BaseComponent {
     _startLoop() {
         this._loopTimer = setInterval(() => {
             try {
-                this.powerOn = this.sys.getVoltageBetween(`${this.id}_wire_vcc`, `${this.id}_wire_gnd`) ===0;
+                this.powerOn = this.sys.getVoltageBetween(`${this.id}_wire_vcc`, `${this.id}_wire_gnd`) > 18 && this.isBreak === false;
+                this.busConnected = this.sys.isPortConnected(`${this.id}_wire_can1p`, 'can_wire_can1p') &&
+                    this.sys.isPortConnected(`${this.id}_wire_can1n`, 'can_wire_can1n');
             } catch (_) { }
             this._tick();
         }, 50);
-        
+
         // 启动时设置NMT为初始化状态
         this.nmtState = NMT_STATE.INIT;
         this.nmtStateTime = Date.now();
@@ -395,21 +413,43 @@ export class DIModule extends BaseComponent {
         if (!this.powerOn) { this._renderOff(); return; }
 
         this.ledStatus.pwr = true;
+        // 3. sysFault（死机）：停止工作
+        if (this.sysFault) {
+            this.ledStatus.run = false;
+            this.ledStatus.flt = true;
+            this.ledStatus.com = false;
+            this._render();
+            return;
+        }
+        // 4. 心跳超时：RUN → PREOP
+        if (now - this._lastHeartbeat > this.heartbeatTimeout && this.nmtState === NMT_STATE.RUN) {
+            this.nmtState = NMT_STATE.PREOP;
+            this.nmtStateTime = now;
+            console.log(`[AO #${this.nodeAddress}] Heartbeat lost → ${NMT_STATE.PREOP} state`);
+        }
         this.ledStatus.run = (now % 1000) < 500;
-
-        // 消抖处理
-        this._processDebounce(now);
 
         // 湿接点电压读取（可由仿真引擎注入）
         ['ch3', 'ch4'].forEach(id => {
             const ch = this.channels[id];
             try {
-                ch.voltage = this.sys.getVoltageBetween(`${this.id}_wire_${id}_a`, `${this.id}_wire_${id}_b`);
+                ch.voltage = this.sys.getVoltageBetween(`${this.id}_wire_${id}p`, `${this.id}_wire_${id}n`);
                 const newRaw = ch.voltage > 15; // 15V 阈值
                 this._injectRaw(id, newRaw);
                 ch.fault = ch.voltage > 0 && ch.voltage < 8; // 8~15V 为不确定区域，标记故障
             } catch (_) { /* 未建模时忽略 */ }
         });
+        ['ch1', 'ch2'].forEach(id => {
+            const ch = this.channels[id];
+            try {
+                const voltage = this.sys.getVoltageBetween(`${this.id}_wire_${id}p`, `${this.id}_wire_${id}n`);
+                const newRaw = this.sys.isPortConnected(`${this.id}_wire_${id}p`, `${this.id}_wire_${id}n`);
+                this._injectRaw(id, newRaw);
+                ch.fault = voltage > 1; // 干接点正常应为0V，非0V可能表示接线错误
+            } catch (_) { /* 未建模时忽略 */ }
+        });
+        // 消抖处理
+        this._processDebounce(now);
 
         // CAN 周期上报 - 仅在RUN状态下发送
         if (this._isCanTransmit() && now - this.lastTxTime >= this.txInterval) {
@@ -418,7 +458,9 @@ export class DIModule extends BaseComponent {
         }
 
         this.ledStatus.com = (now - this.lastTxTime < 80) || (now - this.lastRxTime < 80);
-        this.ledStatus.flt = Object.values(this.channels).some(c => c.fault);
+        this.ledStatus.flt = this.moduleFault || this.commFault || this.sysFault;
+        if (this.powerOn && this.busConnected && !this.commFault) this.sys.canBus.setNodeOnline(this.id);
+        else this.sys.canBus.resetNodeOnline(this.id);
 
         this._render();
     }
@@ -472,28 +514,29 @@ export class DIModule extends BaseComponent {
 
         if (!this.sys || typeof this.sys.canBus === 'undefined') return;
 
-        const stateByte = ['ch1','ch2','ch3','ch4'].reduce((b, id, i) =>
+        const stateByte = ['ch1', 'ch2', 'ch3', 'ch4'].reduce((b, id, i) =>
             b | (this.channels[id].state ? (1 << i) : 0), 0);
-        const faultByte = ['ch1','ch2','ch3','ch4'].reduce((b, id, i) =>
+        const faultByte = ['ch1', 'ch2', 'ch3', 'ch4'].reduce((b, id, i) =>
             b | (this.channels[id].fault ? (1 << i) : 0), 0);
-        const alarmByte = ['ch1','ch2','ch3','ch4'].reduce((b, id, i) => {
+        const alarmByte = ['ch1', 'ch2', 'ch3', 'ch4'].reduce((b, id, i) => {
             const alm = this.alarmConfig[id];
-            const ch  = this.channels[id];
-            const alarm = (alm.trigger === 'ON'  && ch.state) ||
-                          (alm.trigger === 'OFF' && !ch.state);
+            const ch = this.channels[id];
+            const alarm =(alm.trigger === 'NONE')?false: (alm.trigger === 'ON' && ch.state) ||
+                (alm.trigger === 'OFF' && !ch.state);
             return b | (alarm ? (1 << i) : 0);
         }, 0);
 
         const frame = {
-            id:        (CAN_FUNC_DI << 7) | (this.nodeAddress & 0x0F),
-            extended:  false, rtr: false, dlc: 4,
-            data:      [stateByte, faultByte, alarmByte, 0x00],
-            sender:    this.id,
+            id: CANId.encode(CAN_FUNC.DI_REPORT, this.nodeAddress),
+            extended: false, rtr: false, dlc: 4,
+            data: [stateByte, faultByte, alarmByte, 0x00],
+            sender: this.id,
             timestamp: Date.now(),
         };
 
         try {
             this.sys.canBus.send(frame);
+            // console.log(`[DI #${this.nodeAddress}] Report sent: State=${stateByte.toString(2).padStart(4, '0')} Fault=${faultByte.toString(2).padStart(4, '0')} Alarm=${alarmByte.toString(2).padStart(4, '0')}`);
             this.txCount++;
             this.canBusConnected = true;
         } catch (e) {
@@ -513,10 +556,10 @@ export class DIModule extends BaseComponent {
      */
     onCanReceive(frame) {
         if (!frame) return;
-        
+
         // 解析帧 ID
         const { funcCode, nodeAddr } = CANId.decode(frame.id);
-        
+
         // ── 处理NMT命令 ──
         if (funcCode === CAN_FUNC.NMT) {
             const nmtCmd = frame.data[0];
@@ -526,43 +569,130 @@ export class DIModule extends BaseComponent {
             }
             return;
         }
-        
+        // ── 广播心跳（Operational = 0x05）──
+        if (funcCode === CAN_FUNC.BROADCAST) {
+            if (frame.data && frame.data.length > 0 && frame.data[0] === 0x05) {
+                this._lastHeartbeat = Date.now();
+                if (this.nmtState === NMT_STATE.PREOP || this.nmtState === NMT_STATE.INIT) {
+                    this.nmtState = NMT_STATE.RUN;
+                    this.nmtStateTime = Date.now();
+                    console.log(`[DI #${this.nodeAddress}] Heartbeat received → ${NMT_STATE.RUN} state`);
+                }
+            }
+            return;
+        }
         // ── 处理配置命令 ──
-        if (frame.id !== ((0x30 << 7) | (this.nodeAddress & 0x0F))) return;
+        if (frame.id !== CANId.encode(CAN_FUNC.DI_CONFIG,this.nodeAddress )) return;
         this.lastRxTime = Date.now();
         this.rxCount++;
 
-        const cmd      = frame.data[0];
-        const chKeys   = ['ch1','ch2','ch3','ch4'];
-        const chMask   = frame.data[1] || 0;
+        const cmd = frame.data[0];
+        const chKeys = ['ch1', 'ch2', 'ch3', 'ch4'];
+        const chMask = frame.data[1] || 0;
 
         switch (cmd) {
-            case 0x01:
-                chKeys.forEach((id, i) => {
-                    if (chMask & (1 << i))
-                        this.alarmConfig[id].trigger = (frame.data[2] & (1 << i)) ? 'ON' : 'OFF';
-                });
+            // 0x04 — 查询报警触发配置
+            case 0x04:
+                const chIdxQuery = frame.data[1];  // Byte1: 通道索引 (0-3)
+                const chKeysQuery = ['ch1', 'ch2', 'ch3', 'ch4'];
+                if (chIdxQuery >= 0 && chIdxQuery < 4) {
+                    const idQuery = chKeysQuery[chIdxQuery];
+                    const currentTrigger = this.alarmConfig[idQuery]?.trigger || 'OFF';
+                    const triggerValueMap = { 'OFF': 0, 'ON': 1, 'NONE': 2 };
+                    const triggerValue = triggerValueMap[currentTrigger] || 0;
+                    
+                    // 发送查询回复
+                    try {
+                        this.sys.canBus.send({
+                            id: CANId.encode(CAN_FUNC.DI_REPLY, this.nodeAddress),
+                            extended: false, rtr: false, dlc: 3,
+                            data: [0x04, chIdxQuery, triggerValue, 0, 0, 0, 0, 0],
+                            sender: this.id, timestamp: Date.now()
+                        });
+                    } catch (e) {
+                        console.warn('[DI] 报警配置查询回复发送失败', e);
+                    }
+                }
                 break;
+            // 修改报警触发极性
+            case 0x01:
+                const chIdx = frame.data[2];  // Byte2: 通道索引 (0-3)
+                const triggerValue = frame.data[3];  // Byte3: 触发值 (0=OFF, 1=ON, 2=NONE)
+                if (chIdx >= 0 && chIdx < 4) {
+                    const id = chKeys[chIdx];
+                    if (triggerValue === 1) this.alarmConfig[id].trigger = 'ON';
+                    else if (triggerValue === 2) this.alarmConfig[id].trigger = 'NONE';
+                    else this.alarmConfig[id].trigger = 'OFF';
+                }
+                // 发送回复
+                try {
+                    this.sys.canBus.send({
+                        id: CANId.encode(CAN_FUNC.DI_REPLY, this.nodeAddress),
+                        extended: false, rtr: false, dlc: 3,
+                        data: [0x01, chIdx, triggerValue, 0, 0, 0, 0, 0],
+                        sender: this.id, timestamp: Date.now()
+                    });
+                } catch (e) {
+                    console.warn('[DI] 报警配置回复发送失败', e);
+                }
+                break;
+                // 清除计数器
             case 0x02:
                 chKeys.forEach((id, i) => {
                     if (chMask & (1 << i)) this.channels[id].counter = 0;
                 });
                 break;
+                // 修改上报周期
             case 0x03:
                 this.txInterval = Math.max(50, (frame.data[1] << 8) | frame.data[2]);
                 break;
+                // NMT测试命令，回复自己的ID
+            case 0xEE:
+                const id = this.id; // 例如 "hello" 或 "hello world"
+
+                // 1. 初始化数组：0xEE 开头，后面跟 7 个 0 占位
+                // 这样如果字符串不足 7 位，剩下的会自动补 0
+                const payload = [0xEE, 0, 0, 0, 0, 0, 0, 0];
+
+                // 2. 将字符串截取前 7 位，并转换为 ASCII 码填入
+                for (let i = 0; i < 7; i++) {
+                    if (i < id.length) {
+                        payload[i + 1] = id.charCodeAt(i); // i+1 是因为第 0 位是 0xEE
+                    }
+                }
+                console.log(`[DI #${this.nodeAddress}] NMT Test Command Received, replying with ID: ${id}`);
+
+                this._sendResponse(payload);
+                break;                
         }
     }
+    _sendResponse (responseData) {
+        if (!this.sys || typeof this.sys.canBus === 'undefined') return;
 
+        const frameId = CANId.encode(CAN_FUNC.DI_REPLY, this.nodeAddress & 0x0F);
+        const frame = {
+            id: frameId, extended: false, rtr: false, dlc: 8,
+            data: responseData, sender: this.id, timestamp: Date.now(),
+        };
+
+        try {
+            this.sys.canBus.send(frame);
+            this.txCount++;
+            this.canBusConnected = true;
+        } catch (e) {
+            if (++this.comErrorCount > 10) this.ledStatus.flt = true;
+            this.canBusConnected = false;
+        }
+    };
     // ══════════════════════════════════════════
     //  渲染
     // ══════════════════════════════════════════
     _render() {
         CH_CONFIG.forEach(ch => {
             const cData = this.channels[ch.id];
-            const disp  = this._chDisplays[ch.id];
-            const led   = this._chLEDs[ch.id];
-            const alm   = this.alarmConfig[ch.id];
+            const disp = this._chDisplays[ch.id];
+            const led = this._chLEDs[ch.id];
+            const alm = this.alarmConfig[ch.id];
 
             if (cData.fault) {
                 disp.state.text('ERR');
@@ -640,7 +770,7 @@ export class DIModule extends BaseComponent {
         const ch = this.channels[chId];
         if (!ch) return;
         if (ch.raw !== val) {
-            ch.raw        = val;
+            ch.raw = val;
             ch.debounceAt = Date.now();
         }
     }
@@ -649,7 +779,7 @@ export class DIModule extends BaseComponent {
     setState(chId, val) {
         const ch = this.channels[chId];
         if (!ch) return;
-        ch.raw   = val;
+        ch.raw = val;
         ch.state = val;
     }
 

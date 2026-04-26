@@ -28,6 +28,13 @@ export function processAlarms(cc) {
         }
     });
 
+    // DI 报警（基于报警触发方式和状态）
+    ['ch1', 'ch2', 'ch3', 'ch4'].forEach(id => {
+        if (cc.data.di[id]?.alarm) {
+            detected.push(`DI ${id.toUpperCase()}通道 故障报警`);
+        }
+    });
+
     // 液位报警
     const lc = cc.levelCtrl;
     if (lc.level >= lc.setHH) detected.push('液位 HH 高高报警');

@@ -941,7 +941,7 @@ export const CANParser = {
  * // 之后各模块可通过 this.sys.canBus.send(frame) 发送
  */
 export function createCANSystem(modules, busConfig = {}) {
-    const bus = new CANBus({ bitrate: 250000, verbose: true, ...busConfig });
+    const bus = new CANBus({ bitrate: 250000, verbose: false, ...busConfig });
 
     // 挂载各模块（按优先级顺序）
     if (modules.cc) bus.attach(modules.cc);

@@ -20,7 +20,7 @@ import { CAN_FUNC, CANId, NMT_CMD, NMT_STATE } from './CANBUS.js';
 //  常量
 // ─────────────────────────────────────────────
 const W = 200;
-const H = 340;
+const H = 340;  // 增加高度以容纳模式、LRV/URV、安全输出配置显示区域
 
 const CH_CONFIG = [
     { id: 'ch1', label: 'CH1', type: '4-20mA', yPort: 60 },
@@ -29,8 +29,6 @@ const CH_CONFIG = [
     { id: 'ch4', label: 'CH4', type: 'PWM', yPort: 180 },
 ];
 
-// CAN 总线帧 ID 功能码 0x02 = AO
-const CAN_FUNC_AO = 0x01;
 
 // PWM 可视化更新周期 (ms)
 const PWM_RENDER_INTERVAL = 50;
@@ -55,7 +53,7 @@ export class AOModule extends BaseComponent {
         this.isBreak = false; // 线路断开状态（模拟电源断开或输出回路故障）
         this.commFault = false; // 通信故障标志
         this.moduleFault = false; // 模块故障标志（如过温、内部错误等）
-        this.channelFault = { ch1: false, ch2: false, ch3: false, ch4: false }; // 各通道故障状态
+        this.channelFault = false; // 通道1故障状态
 
 
         // ── 节点地址 (0~15) ──
@@ -63,24 +61,24 @@ export class AOModule extends BaseComponent {
 
         // ── 终端电阻使能 ──
         this.termEnabled = false;
-        this.currentResistance = this.termEnabled ? 120 : Infinity; // 120Ω 或开路  
+        this.currentResistance = 1000000; // 120Ω 或开路  
 
         // ── 通道输出数据 ──
-        // percent: 0~100% 设定值；actual: 实际输出物理量；fault: 输出回路故障
+        // percent: 0~100% 设定值；actual: 实际输出物理量；fault: 输出回路故障；mode: 'hand'|'auto'|'disable'
         this.channels = {
-            ch1: { type: '4-20mA', percent: 0, actual: 4.0, fault: false, hold: false },
-            ch2: { type: '4-20mA', percent: 0, actual: 4.0, fault: false, hold: false },
+            ch1: { type: '4-20mA', percent: 0, actual: 4.0, fault: false, hold: false, mode: 'hand' },
+            ch2: { type: '4-20mA', percent: 0, actual: 4.0, fault: false, hold: false, mode: 'hand' },
             ch3: {
-                type: 'PWM', percent: 0, actual: 0, fault: false, hold: false,
+                type: 'PWM', percent: 0, actual: 0, fault: false, hold: false, mode: 'hand',
                 frequency: 1000, pwmPhase: 0, instantOn: false
             },
             ch4: {
-                type: 'PWM', percent: 0, actual: 0, fault: false, hold: false,
+                type: 'PWM', percent: 0, actual: 0, fault: false, hold: false, mode: 'hand',
                 frequency: 1000, pwmPhase: 0, instantOn: false
             },
         };
 
-        // ── 量程/单位配置（供工程量显示使用）──
+        // ── 量程/单位配置（包含LRV/URV上下限）──
         this.ranges = {
             ch1: { lrv: 0, urv: 100, unit: '%' },
             ch2: { lrv: 0, urv: 100, unit: '%' },
@@ -93,8 +91,8 @@ export class AOModule extends BaseComponent {
         this.safeOutput = {
             ch1: { mode: 'hold', presetPercent: 0 },
             ch2: { mode: 'hold', presetPercent: 0 },
-            ch3: { mode: 'zero', presetPercent: 0 },
-            ch4: { mode: 'zero', presetPercent: 0 },
+            ch3: { mode: 'preset', presetPercent: 50 },
+            ch4: { mode: 'preset', presetPercent: 50 },
         };
 
         // ── 模块状态灯 ──
@@ -109,6 +107,7 @@ export class AOModule extends BaseComponent {
         this.txInterval = 500; // ms，状态回报周期
         this.comErrorCount = 0;
         this.comTimeout = 2000; // ms，超时触发安全输出
+        this.heartbeatTimeout = 5000; // ms，心跳超时判定
 
         // ── 内部计时 ──
         this._runBlink = false;
@@ -307,6 +306,7 @@ export class AOModule extends BaseComponent {
 
         termBg.on('click tap', () => {
             this.termEnabled = !this.termEnabled;
+            this.currentResistance = this.termEnabled ? 120 : 1000000;
             this._termKnob.y(this.termEnabled ? y0 + 10 : y0 + 22);
             this._termKnob.fill(this.termEnabled ? '#00aaff' : '#333');
             this._refreshCache();
@@ -462,7 +462,7 @@ export class AOModule extends BaseComponent {
         if (now - this._lastHeartbeat > this.heartbeatTimeout && this.nmtState === NMT_STATE.RUN) {
             this.nmtState = NMT_STATE.PREOP;
             this.nmtStateTime = now;
-            console.log(`[AI #${this.nodeAddress}] Heartbeat lost → ${NMT_STATE.PREOP} state`);
+            console.log(`[AO #${this.nodeAddress}] Heartbeat lost → ${NMT_STATE.PREOP} state`);
         }
 
         // RUN 灯 500ms 闪烁
@@ -505,7 +505,20 @@ export class AOModule extends BaseComponent {
 
         Object.keys(this.channels).forEach(id => {
             const ch = this.channels[id];
-            const pct = Math.max(0, Math.min(100, ch.percent)); // 0~100%
+            const rng = this.ranges[id];
+
+            // disable 模式下，停止输出并置为最小值
+            if (ch.mode === 'disable') {
+                ch.actual = 0;
+                ch.instantOn = false;
+                ch.percent = 0;
+                return;
+            }
+
+            // 应用 LRV/URV 限制
+            let pct = ch.percent;
+            pct = Math.max(rng.lrv, Math.min(rng.urv, pct)); // 限制到 [LRV, URV]
+            pct = Math.max(0, Math.min(100, pct)); // 再限制到 [0%, 100%]
 
             if (ch.type === '4-20mA') {
                 // 线性映射：0% → 4mA，100% → 20mA
@@ -515,12 +528,12 @@ export class AOModule extends BaseComponent {
 
             } else if (ch.type === 'PWM') {
                 // PWM 相位累加
-                const period = 1 / Math.max(1, ch.frequency); // 秒/周期
+                const period = ch.frequency/200; // 秒/周期
                 ch.pwmPhase += dt;
-                if (ch.pwmPhase >= period) ch.pwmPhase -= period;
+                if (ch.pwmPhase >= period) ch.pwmPhase =ch.pwmPhase%period;
                 ch.actual = pct;
                 ch.instantOn = ch.pwmPhase < (period * pct / 100);
-                ch.fault = false;
+
             }
         });
     }
@@ -561,7 +574,6 @@ export class AOModule extends BaseComponent {
 
         // 解析帧 ID
         const { funcCode, nodeAddr } = CANId.decode(frame.id);
-        console.log(funcCode, nodeAddr);
 
         // ── 处理NMT命令 ──
         if (funcCode === CAN_FUNC.NMT) {
@@ -572,10 +584,20 @@ export class AOModule extends BaseComponent {
             }
             return;
         }
-
+        // ── 广播心跳（Operational = 0x05）──
+        if (funcCode === CAN_FUNC.BROADCAST) {
+            if (frame.data && frame.data.length > 0 && frame.data[0] === 0x05) {
+                this._lastHeartbeat = Date.now();
+                if (this.nmtState === NMT_STATE.PREOP || this.nmtState === NMT_STATE.INIT) {
+                    this.nmtState = NMT_STATE.RUN;
+                    this.nmtStateTime = Date.now();
+                    console.log(`[AO #${this.nodeAddress}] Heartbeat received → ${NMT_STATE.RUN} state`);
+                }
+            }
+            return;
+        }
         // ── 处理配置命令 ──
-        const expectedId = (0x2 << 7) | (this.nodeAddress & 0x0F);
-        console.log(expectedId);
+        const expectedId = CANId.encode(CAN_FUNC.AO_CMD, this.nodeAddress);
         if (frame.id !== expectedId) return;
 
         this.lastRxTime = Date.now();
@@ -583,34 +605,215 @@ export class AOModule extends BaseComponent {
         this.ledStatus.com = true;
 
         const chKeys = ['ch1', 'ch2', 'ch3', 'ch4'];
-        chKeys.forEach((id, i) => {
-            const raw = (frame.data[i * 2] << 8) | frame.data[i * 2 + 1];
-            if (raw === 0xFFFF) return; // Hold：保持当前输出
-
-            const pct = raw / 100;
-            this.channels[id].percent = Math.max(0, Math.min(100, pct));
-            this.channels[id].hold = false; // 收到有效指令，解除安全锁定
-        });
-
-        // 扩展命令帧（DLC=9 时 Byte8 为命令字）
-        if (frame.dlc >= 9) {
-            const cmd = frame.data[8];
+        
+        // 判断是否为扩展命令帧（Data[0] 在 0x10-0xEE 范围内）
+        const isExtendedCmd = (frame.data[0] & 0xF0) >= 0x10 && (frame.data[0] != 0xFF);
+        
+        if (isExtendedCmd ) {
+            // 扩展命令帧处理
+            const cmd = frame.data[0];
             if (cmd === 0x10) {
                 // 批量归零
                 chKeys.forEach(id => { this.channels[id].percent = 0; this.channels[id].hold = false; });
             } else if (cmd === 0x11) {
-                // 修改 PWM 频率（Data[9-10] = Hz for CH3, Data[11-12] = Hz for CH4）
-                if (frame.dlc >= 13) {
-                    this.channels.ch3.frequency = (frame.data[9] << 8) | frame.data[10];
-                    this.channels.ch4.frequency = (frame.data[11] << 8) | frame.data[12];
+                // 修改 PWM 频率（Data[2-3] = Hz for CH3, Data[4-5] = Hz for CH4）
+                this.channels.ch3.frequency = (frame.data[2] << 8) | frame.data[3];
+                this.channels.ch4.frequency = (frame.data[4] << 8) | frame.data[5];
+            } else if (cmd === 0x12) {
+                // 通道模式设置
+                // Data[1] = 通道索引 (0-3)，Data[2] = 模式 (0=hand, 1=auto, 2=disable)
+                const chIdx = frame.data[1] & 0xFF;
+                const mode = frame.data[2] & 0xFF;
+                if (chIdx < 4) {
+                    const modeStr = mode === 0 ? 'hand' : mode === 1 ? 'auto' : 'disable';
+                    this.channels[chKeys[chIdx]].mode = modeStr;
                 }
+            } else if (cmd === 0x13) {
+                // 设置 LRV/URV
+                // Data[1] = 通道索引 (0-3)，Data[2-3] = LRV × 100，Data[4-5] = URV × 100
+                const chIdx = frame.data[1] & 0xFF;
+                const lrvInt = (frame.data[2] << 8) | frame.data[3];
+                const urvInt = (frame.data[4] << 8) | frame.data[5];
+                if (chIdx < 4) {
+                    this.ranges[chKeys[chIdx]].lrv = Math.max(0, Math.min(100, lrvInt / 100));
+                    this.ranges[chKeys[chIdx]].urv = Math.max(0, Math.min(100, urvInt / 100));
+                }
+            } else if (cmd === 0x14) {
+                // 读取参数请求
+                // Data[1] = 通道索引 (0-3)
+                const chIdx = frame.data[1] & 0xFF;
+                if (chIdx < 4) {
+                    this._sendParamReply(chIdx);
+                }
+            } else if (cmd === 0x15) {
+                // 读取安全输出配置请求
+                // Data[1] = 通道索引 (0-3)
+                const chIdx = frame.data[1] & 0xFF;
+                if (chIdx < 4) {
+                    this._sendSafeOutputReply(chIdx);
+                }
+            } else if (cmd === 0x16) {
+                // 设置安全输出配置
+                // Data[1] = 通道索引 (0-3)
+                // Data[2] = 模式 (0=hold, 1=preset, 2=zero)
+                // Data[3-4] = 预设值 × 100
+                const chIdx = frame.data[1] & 0xFF;
+                const mode = frame.data[2] & 0xFF;
+                const presetInt = (frame.data[3] << 8) | frame.data[4];
+                if (chIdx < 4) {
+                    const modeStr = mode === 0 ? 'hold' : mode === 1 ? 'preset' : 'zero';
+                    const presetPercent = Math.max(0, Math.min(100, presetInt / 100));
+                    this.safeOutput[chKeys[chIdx]].mode = modeStr;
+                    this.safeOutput[chKeys[chIdx]].presetPercent = presetPercent;
+                }
+            }else if (cmd === 0xEE) {
+                const id = this.id; // 例如 "hello" 或 "hello world"
+                // 1. 初始化数组：0xEE 开头，后面跟 7 个 0 占位
+                // 这样如果字符串不足 7 位，剩下的会自动补 0
+                const payload = [0xEE, 0, 0, 0, 0, 0, 0, 0];
+
+                // 2. 将字符串截取前 7 位，并转换为 ASCII 码填入
+                for (let i = 0; i < 7; i++) {
+                    if (i < id.length) {
+                        payload[i + 1] = id.charCodeAt(i); // i+1 是因为第 0 位是 0xEE
+                    }
+                }
+                this._sendResponse(payload);
             }
+        } else {
+            // 标准输出指令帧（8字节）
+            // Data[0-1] = CH1 值（× 10）
+            // Data[2-3] = CH2 值（× 10）
+            // Data[4-5] = CH3 值（× 10）
+            // Data[6-7] = CH4 值（× 10）
+            chKeys.forEach((id, i) => {
+                const raw = (frame.data[i * 2] << 8) | frame.data[i * 2 + 1];
+                if (raw === 0xFFFF) return; // Hold：保持当前输出
+
+                const pct = raw / 10;
+                this.channels[id].percent = Math.max(0, Math.min(100, pct));
+                this.channels[id].hold = false; // 收到有效指令，解除安全锁定
+            });
+        }
+    }
+
+    _sendResponse (responseData) {
+        if (!this.sys || typeof this.sys.canBus === 'undefined') return;
+
+        const frameId = CANId.encode(CAN_FUNC.AO_REPLY, this.nodeAddress & 0x0F);
+        const frame = {
+            id: frameId, extended: false, rtr: false, dlc: 8,
+            data: responseData, sender: this.id, timestamp: Date.now(),
+        };
+
+        try {
+            this.sys.canBus.send(frame);
+            this.txCount++;
+            this.canBusConnected = true;
+        } catch (e) {
+            if (++this.comErrorCount > 10) this.ledStatus.flt = true;
+            this.canBusConnected = false;
+        }
+    };    
+    /**
+     * 回复参数给中央计算机（通过 AO_REPLY 帧）
+     * @param {number} chIdx - 通道索引 (0-3)
+     */
+    _sendParamReply(chIdx) {
+        if (!this.sys || typeof this.sys.canBus === 'undefined') return;
+        
+        const chKeys = ['ch1', 'ch2', 'ch3', 'ch4'];
+        const chId = chKeys[chIdx];
+        if (!chId) return;
+        
+        const ch = this.channels[chId];
+        const rng = this.ranges[chId];
+        
+        // 模式编码：0=hand, 1=auto, 2=disable
+        const modeMap = { hand: 0, auto: 1, disable: 2 };
+        const mode = modeMap[ch.mode] || 2;
+        
+        // LRV/URV × 100
+        const lrvInt = Math.round(rng.lrv * 100);
+        const urvInt = Math.round(rng.urv * 100);
+        
+        const frameId = CANId.encode(CAN_FUNC.AO_REPLY, this.nodeAddress);
+        const data = [
+            chIdx & 0xFF,
+            mode & 0xFF,
+            (lrvInt >> 8) & 0xFF,
+            lrvInt & 0xFF,
+            (urvInt >> 8) & 0xFF,
+            urvInt & 0xFF,
+            0x00,
+            0x00,
+        ];
+        
+        try {
+            this.sys.canBus.send({
+                id: frameId,
+                extended: false,
+                rtr: false,
+                dlc: 8,
+                data,
+                sender: this.id,
+                timestamp: Date.now()
+            });
+        } catch (e) {
+            console.warn(`[AO] 参数回复失败 ${chId}:`, e);
+        }
+    }
+
+    /**
+     * 回复安全输出配置给中央计算机（通过 AO_REPLY 帧）
+     * @param {number} chIdx - 通道索引 (0-3)
+     */
+    _sendSafeOutputReply(chIdx) {
+        if (!this.sys || typeof this.sys.canBus === 'undefined') return;
+        
+        const chKeys = ['ch1', 'ch2', 'ch3', 'ch4'];
+        const chId = chKeys[chIdx];
+        if (!chId) return;
+        
+        const safeOut = this.safeOutput[chId];
+        
+        // 模式编码：0=hold, 1=preset, 2=zero
+        const modeMap = { hold: 0, preset: 1, zero: 2 };
+        const mode = modeMap[safeOut.mode] ;
+        
+        // 预设值 × 100
+        const presetInt = Math.round(safeOut.presetPercent * 100);
+        
+        const frameId = CANId.encode(CAN_FUNC.AO_REPLY, this.nodeAddress);
+        const data = [
+            chIdx & 0xFF,
+            mode & 0xFF,
+            (presetInt >> 8) & 0xFF,
+            presetInt & 0xFF,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+        
+        try {
+            this.sys.canBus.send({
+                id: frameId,
+                extended: false,
+                rtr: false,
+                dlc: 8,
+                data,
+                sender: this.id,
+                timestamp: Date.now()
+            });
+        } catch (e) {
+            console.warn(`[AO] 安全输出回复失败 ${chId}:`, e);
         }
     }
 
     /**
      * 向中央计算机发送状态回报帧（心跳 + 实际输出值）
-     * 回报帧 ID = (CAN_FUNC_AO << 7) | nodeAddress
+     * 回报帧 ID = (CAN_FUNC.AO_STATUS<< 7) | nodeAddress，CANId.encode(CAN_FUNC.AO_STATUS, this.nodeAddress)
      * Data（8字节）：
      *   Byte 0-1: CH1 实际电流 × 100 (如 820 = 8.20mA)
      *   Byte 2-3: CH2 实际电流 × 100
@@ -622,7 +825,7 @@ export class AOModule extends BaseComponent {
     _canTransmitStatus() {
         if (!this.sys || typeof this.sys.canBus === 'undefined') return;
 
-        const frameId = (CAN_FUNC_AO << 7) | (this.nodeAddress & 0x0F);
+        const frameId = CANId.encode(CAN_FUNC.AO_STATUS, this.nodeAddress);
         const ch1mA100 = Math.round(this.channels.ch1.actual * 100);
         const ch2mA100 = Math.round(this.channels.ch2.actual * 100);
         const faultByte =
@@ -659,6 +862,21 @@ export class AOModule extends BaseComponent {
             const cData = this.channels[ch.id];
             const disp = this._chDisplays[ch.id];
             const led = this._chLEDs[ch.id];
+            const rng = this.ranges[ch.id];
+
+            // disable 模式 - 显示禁用状态
+            if (cData.mode === 'disable') {
+                disp.val.text('DISABLE');
+                disp.val.fill('#555555');
+                disp.unit.text('');
+                disp.bg.stroke('#333333');
+                disp.phys.text('');
+                disp.status.text('OFF');
+                disp.status.fill('#555555');
+                led.fill('#222222');
+                if (ch.type === 'PWM' && disp.barFg) disp.barFg.width(0);
+                return;
+            }
 
             if (!this.powerOn || cData.fault) {
                 disp.val.text(cData.fault ? ' FAULT' : '');
@@ -673,7 +891,10 @@ export class AOModule extends BaseComponent {
                 return;
             }
 
-            const pct = cData.percent;
+            // 应用 LRV/URV 限制显示
+            let pct = cData.percent;
+            pct = Math.max(rng.lrv, Math.min(rng.urv, pct));
+            pct = Math.max(0, Math.min(100, pct));
 
             if (ch.type === '4-20mA') {
                 disp.val.text(pct.toFixed(1).padStart(6, ' '));
@@ -695,9 +916,17 @@ export class AOModule extends BaseComponent {
                 led.fill(cData.instantOn ? '#ff6600' : (pct > 0.1 ? '#442200' : '#222'));
             }
 
-            // HOLD / 正常状态标注
-            disp.status.text(cData.hold ? 'HOLD' : '----');
-            disp.status.fill(cData.hold ? '#ffcc00' : '#555');
+            // 显示模式和 HOLD 状态
+            if (cData.mode === 'hand') {
+                disp.status.text('HAND');
+                disp.status.fill('#ffcc00');
+            } else if (cData.mode === 'auto') {
+                disp.status.text('AUTO');
+                disp.status.fill('#00ff44');
+            } else {
+                disp.status.text(cData.hold ? 'HOLD' : '----');
+                disp.status.fill(cData.hold ? '#ffcc00' : '#555');
+            }
         });
 
         // 模块状态灯
@@ -745,12 +974,12 @@ export class AOModule extends BaseComponent {
     // ══════════════════════════════════════════
 
     /**
-     * 直接设置通道输出百分比（供测试/手动仿真使用）
+     * 直接设置通道输出百分比（供手动控制使用）
      * @param {string} chId    - 'ch1' | 'ch2' | 'ch3' | 'ch4'
      * @param {number} percent - 0~100
      */
     setOutput(chId, percent) {
-        if (this.channels[chId] !== undefined) {
+        if (this.channels[chId] !== undefined&& this.channels[chId].mode === 'hand') {
             this.channels[chId].percent = Math.max(0, Math.min(100, percent));
             this.channels[chId].hold = false;
         }

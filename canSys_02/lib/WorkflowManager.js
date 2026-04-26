@@ -11,7 +11,7 @@ export class WorkflowManager {
         this.sys = sys;
         sys.requiredPipes = [
 
-        ];        
+        ];
     }
 
     // ==========================================
@@ -139,9 +139,9 @@ export class WorkflowManager {
                 act: async () => {
                     await sys.connMgr.addConnectionAnimated(autoConns[9]);
                     await sys.connMgr.addConnectionAnimated(autoConns[10]);
-                    await sys.connMgr.addConnectionAnimated(autoConns[11]);                    
+                    await sys.connMgr.addConnectionAnimated(autoConns[11]);
                 },
-                check: () => checkConnectionsExist([9, 10,11])
+                check: () => checkConnectionsExist([9, 10, 11])
             },
             {
                 msg: "9：连接温度变送器输出信号 (4-20mA) 至 PID 输入端。",
@@ -231,7 +231,7 @@ export class WorkflowManager {
                 check: () => !sys.comps.monitor.activeAlarms.some(a => !a.muted)
             }
         ];
-     
+
     }
 
     // ==========================================
@@ -261,21 +261,21 @@ export class WorkflowManager {
                 trigger: () => { sys.comps['ai'].moduleFault = true; },
                 check: () => { return sys.comps['ai'].moduleFault === true; },
                 repair: () => { sys.comps['ai'].moduleFault = false; }
-            }, 
+            },
             4: {
                 id: 4,
                 name: "4. DPU信号通道故障 ",
                 trigger: () => { sys.comps['ai'].channelFault = true; },
                 check: () => { return sys.comps['ai'].channelFault === true; },
                 repair: () => { sys.comps['ai'].channelFault = false; }
-            }, 
+            },
             5: {
                 id: 5,
                 name: "5. DPU系统故障 ",
                 trigger: () => { sys.comps['ai'].sysFault = true; },
                 check: () => { return sys.comps['ai'].sysFault === true; },
                 repair: () => { sys.comps['ai'].sysFault = false; }
-            },                                    
+            },
         };
 
         const faultForm = document.getElementById('faultForm');
@@ -337,15 +337,28 @@ export class WorkflowManager {
     applyAllPresets() {
         const sys = this.sys;
         sys.conns = [
+            { from: 'ai_wire_vcc', to: 'dcpower_wire_p', type: 'wire' },
+            { from: 'ai_wire_gnd', to: 'dcpower_wire_n', type: 'wire' },
+            { from: 'dcpower_wire_n', to: 'gnd_wire_gnd', type: 'wire' },
             { from: 'ao_wire_vcc', to: 'dcpower_wire_p', type: 'wire' },
             { from: 'ao_wire_gnd', to: 'dcpower_wire_n', type: 'wire' },
-            { from: 'dcpower_wire_n', to: 'gnd_wire_gnd', type: 'wire' },  
+            { from: 'di_wire_vcc', to: 'dcpower_wire_p', type: 'wire' },
+            { from: 'di_wire_gnd', to: 'dcpower_wire_n', type: 'wire' },
+            { from: 'do_wire_vcc', to: 'dcpower_wire_p', type: 'wire' },
+            { from: 'do_wire_gnd', to: 'dcpower_wire_n', type: 'wire' },
 
+            { from: 'ai_wire_can1p', to: 'can_wire_can1p', type: 'wire' },
+            { from: 'ai_wire_can1n', to: 'can_wire_can1n', type: 'wire' },
             { from: 'ao_wire_can1p', to: 'can_wire_can1p', type: 'wire' },
-            { from: 'ao_wire_can1n', to: 'can_wire_can1n', type: 'wire' },   
+            { from: 'ao_wire_can1n', to: 'can_wire_can1n', type: 'wire' },
+            { from: 'di_wire_can1p', to: 'can_wire_can1p', type: 'wire' },
+            { from: 'di_wire_can1n', to: 'can_wire_can1n', type: 'wire' },
+            { from: 'do_wire_can1p', to: 'can_wire_can1p', type: 'wire' },
+            { from: 'do_wire_can1n', to: 'can_wire_can1n', type: 'wire' },
+
             { from: 'cc_wire_can1p', to: 'can_wire_can1p', type: 'wire' },
-            { from: 'cc_wire_can1n', to: 'can_wire_can1n', type: 'wire' },                       
-            
+            { from: 'cc_wire_can1n', to: 'can_wire_can1n', type: 'wire' },
+
         ];
         sys.redrawAll();
     }

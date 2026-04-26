@@ -306,6 +306,7 @@ export function applyCANMixin(proto) {
                 }
 
                 this._sendResponse(payload);
+                break;
             }
         }
     };

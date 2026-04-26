@@ -13,6 +13,10 @@ import { StopValve } from './components/StopValve.js';
 import { Pump } from './components/Pump.js';
 import { Cooler } from './components/Cooler.js';
 import { Engine } from './components/Engine.js';
+import { WaterTankSystem} from './components/WatertankSystem.js';
+import { WaterTankTwoPos } from './components/WaterTankTwoPos.js';
+import { WaterTankLevelControl} from './components/WaterTankLevelControl.js';
+
 import { DiffTransmitter } from './components/DiffTransmitter.js';
 import { BubbleLevelTransmitter } from './components/BubbleLevelTransmitter.js';
 
@@ -133,23 +137,23 @@ export class ControlSystem {
         const offsetY = (window.innerHeight - baseHeight * scale) / 2;
 
         const componentConfigs = [
-            // { Class: AIModule, id: 'ai', x: 1750, y: 340 },
-            { Class: AOModule, id: 'ao', x: 250, y: 340 },
-            // { Class: DIModule, id: 'di', x: 1000, y: 340 },
-            // { Class: DOModule, id: 'do', x: 1450, y: 340 }, 
+            { Class: AIModule, id: 'ai', x: 1750, y: 340 },
+             { Class: AOModule, id: 'ao', x: 750, y: 340 },
+            { Class: DIModule, id: 'di', x: 1250, y: 340 },
+             { Class: DOModule, id: 'do', x: 250, y: 340 }, 
             { Class: CentralComputer, id: 'cc', x: 650, y: 40 },
             { Class: BUSCON, id: 'can', x: 650, y: 1000 },
-            // { Class: TempTransmitter, id: 'temptr', x: 0, y: 360 },
+             { Class: WaterTankLevelControl, id: 'difflevel', x: 50, y: 100 },           
+             { Class: TempTransmitter, id: 'temptr', x: 0, y: 360 },
             { Class: VariResistor, id: 'pt', x: 20, y: 640 },
-            // {
-            //     Class: SmartPressTransmitter, id: 'PT101', x: 100, y: 600,
-            //     min: 0, max: 1, unit: 'Mpa', tag: 'PT-101'
-            // },
+             { Class: SmartPressTransmitter, id: 'PT101', x: 100, y: 600,
+             min: 0, max: 1, unit: 'Mpa', tag: 'PT-101'
+            },
             // { Class: BubbleLevelTransmitter, id: 'bubble', x: 310, y: 210 },
             // { Class: Rosemount475, id: 'HHT1', x: 500, y: 350 },
             //  { Class: RealResistor, id: 'r', x: 20, y: 440 },             
             // { Class: Resistor, id: 'termr2', x: 1220, y: 340 },
-            // { Class: Oscilloscope_tri, id: 'osc3', x: 510, y: 10 },  
+            //{ Class: Oscilloscope_tri, id: 'osc3', x: 510, y: 10 },  
             // { Class: SignalGenerator, id: 'sg', x: 510, y: 10 },   
             //  { Class: PressMeter, id: 'pmeter', x: 510, y: 10 },                                
             { Class: DCPower, id: 'dcpower', x: 310, y: 10 },
@@ -178,7 +182,7 @@ export class ControlSystem {
         this.voltageSolver = new CircuitSolver(this);
         this.pressSolver = new PneumaticSolver(this);
         this.showComp = new Show(this);
-        this.bus = new createCANSystem({ cc: this.comps.cc, ao: this.comps.ao });
+        this.bus = new createCANSystem({ cc: this.comps.cc,ai:this.comps.ai,ao:this.comps.ao, di: this.comps.di, do:this.comps.do });
         // this.bus = new createCANSystem({cc:this.comps.cc,ai:this.comps.ai,ao:this.comps.ao,di:this.comps.di,do:this.comps.do});
 
         // perfMonitor.enabled = true;

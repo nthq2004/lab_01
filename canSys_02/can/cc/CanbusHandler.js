@@ -72,7 +72,7 @@ export function canHandleAIReport(cc, frame, nodeAddr) {
     let hasError = false;
     // ch1, ch2: scale=100 (2位小数)；ch3, ch4: scale=10 (1位小数)
     const scaleMap = { ch1: 100, ch2: 100, ch3: 10, ch4: 10 };
-    
+
     ['ch1', 'ch2', 'ch3', 'ch4'].forEach(id => {
         const ch = parsed[id]; if (!ch) return;
         //特定值判错：0x8000 (两补码表示的 -32768) 代表传感器故障
@@ -240,8 +240,67 @@ export function canHandleAOStatus(cc, frame, nodeAddr) {
 }
 
 export function canHandleAOReply(cc, frame, nodeAddr) {
-    // 预留：按需实现 AO 配置回复解析
+    // 处理 AO 回复（参数或安全输出配置）
+    // Data[0]: 通道索引 (0-3)
+    if (frame.data[0] === 0xEE) {
+
+        const idHex = '0x' + frame.id.toString(16);
+        const test = '0x' + frame.data[0].toString(16);
+        // 1. 截取从索引 1 开始的所有数据
+        const slice = frame.data.slice(1);
+        // 2. 找到第一个 0 的位置（字符串结束符）
+        const zeroIndex = slice.indexOf(0);
+        // 3. 如果找到了 0，就截取到 0 为止；如果没找到（全是有效字符），就保留全部
+        const validBytes = zeroIndex !== -1 ? slice.slice(0, zeroIndex) : slice;
+        // 4. 转回字符串
+        const str = String.fromCharCode(...validBytes);
+        cc._appendNetDiagLog(`RX TEST reply-> id=${idHex} addr=${nodeAddr} cmd=${test} 设备ID是：${str}`);
+        cc._canNodeLastSeen[nodeAddr] = Date.now();
+        return;
+    }    
     cc._canNodeLastSeen[nodeAddr] = Date.now();
+
+    if (!frame.data || frame.data.length < 6) return;
+
+    const chIdx = frame.data[0] & 0xFF;
+    const chKeys = ['ch1', 'ch2', 'ch3', 'ch4'];
+    if (chIdx >= 4) return;
+
+    const chId = chKeys[chIdx];
+    if (!cc.data.ao[chId]) cc.data.ao[chId] = {};
+
+    // 判断回复类型：检查 Data[4-5] 是否为 0
+    // 如果 Data[4-5] 都是 0，则为安全输出回复；否则为参数回复
+    const isSafeOutputReply = (frame.data[4] === 0x00 && frame.data[5] === 0x00);
+
+    if (isSafeOutputReply) {
+        // 安全输出配置回复
+        // Data[1]: 模式 (0=hold, 1=preset, 2=zero)
+        // Data[2-3]: 预设值 × 100
+        const mode = frame.data[1] & 0xFF;
+        const presetInt = (frame.data[2] << 8) | frame.data[3];
+        const modeStr = mode === 0 ? 'hold' : mode === 1 ? 'preset' : 'zero';
+        const presetPercent = Math.max(0, Math.min(100, presetInt / 100));
+
+        if (!cc.data.ao[chId].safeOutput) cc.data.ao[chId].safeOutput = {};
+        cc.data.ao[chId].safeOutput.mode = modeStr;
+        cc.data.ao[chId].safeOutput.presetPercent = presetPercent;
+    } else {
+        // 参数回复（LRV/URV）
+        // Data[1]: 模式 (0=hand, 1=auto, 2=disable)
+        // Data[2-3]: LRV × 100
+        // Data[4-5]: URV × 100
+        const mode = frame.data[1] & 0xFF;
+        const lrvInt = (frame.data[2] << 8) | frame.data[3];
+        const urvInt = (frame.data[4] << 8) | frame.data[5];
+        const modeStr = mode === 0 ? 'hand' : mode === 1 ? 'auto' : 'disable';
+        const lrv = Math.max(0, Math.min(100, lrvInt / 100));
+        const urv = Math.max(0, Math.min(100, urvInt / 100));
+
+        cc.data.ao[chId].mode = modeStr;
+        cc.data.ao[chId].lrv = lrv;
+        cc.data.ao[chId].urv = urv;
+    }
 }
 
 // ══════════════════════════════════════════
@@ -252,20 +311,71 @@ export function canHandleDIReport(cc, frame, nodeAddr) {
     const parsed = CANParser.parseDIReport(frame);
     if (!parsed) return;
     ['ch1', 'ch2', 'ch3', 'ch4'].forEach((id, i) => {
-        const newState = parsed[`${ id }State`];
+        const newState = parsed[`${id}State`];
         const fault = !!(parsed.faultByte & (1 << i));
+        const alarm = !!(parsed.alarmByte & (1 << i));  // 解析报警字节
         if (newState && !cc._diPrevState[id]) {
             cc.data.di[id].counter = (cc.data.di[id].counter || 0) + 1;
         }
         cc._diPrevState[id] = newState;
         cc.data.di[id].state = newState;
         cc.data.di[id].fault = fault;
+        cc.data.di[id].alarm = alarm;  // 存储报警状态
     });
     cc._canNodeLastSeen[nodeAddr] = Date.now();
 }
 
 export function canHandleDIReply(cc, frame, nodeAddr) {
-    // 预留：按需实现 DI 配置回复解析
+    // 解析报警触发配置回复
+    if (!frame || frame.data.length < 3) return;
+    const cmd = frame.data[0];  // 命令字
+
+    // 0x04 — 报警触发方式回复（查询）
+    if (cmd === 0x04) {
+        const chIdx = frame.data[1];  // 通道索引 (0-3)
+        const triggerValue = frame.data[2];  // 触发值 (0=OFF, 1=ON, 2=NONE)
+        const chKeys = ['ch1', 'ch2', 'ch3', 'ch4'];
+
+        if (chIdx >= 0 && chIdx < 4) {
+            const chId = chKeys[chIdx];
+            const triggerMap = { 0: 'OFF', 1: 'ON', 2: 'NONE' };
+            const trigger = triggerMap[triggerValue] || 'OFF';
+
+            if (!cc.data.di[chId]) cc.data.di[chId] = {};
+            cc.data.di[chId].trigger = trigger;
+            console.log(`[CC] 收到DI报警配置回复 ${chId} trigger=${trigger}`);
+        }
+    }
+
+    // 0x01 — 报警触发方式回复（修改）
+    if (cmd === 0x01) {
+        const chIdx = frame.data[1];  // 通道索引 (0-3)
+        const triggerValue = frame.data[2];  // 触发值 (0=OFF, 1=ON, 2=NONE)
+        const chKeys = ['ch1', 'ch2', 'ch3', 'ch4'];
+
+        if (chIdx >= 0 && chIdx < 4) {
+            const chId = chKeys[chIdx];
+            const triggerMap = { 0: 'OFF', 1: 'ON', 2: 'NONE' };
+            const trigger = triggerMap[triggerValue] || 'OFF';
+
+            if (!cc.data.di[chId]) cc.data.di[chId] = {};
+            cc.data.di[chId].trigger = trigger;
+            console.log(`[CC] 收到DI报警配置修改回复 ${chId} trigger=${trigger}`);
+        }
+    }
+    if (cmd === 0xEE) {
+        const idHex = '0x' + frame.id.toString(16);
+        const test = '0x' + frame.data[0].toString(16);
+        // 1. 截取从索引 1 开始的所有数据
+        const slice = frame.data.slice(1);
+        // 2. 找到第一个 0 的位置（字符串结束符）
+        const zeroIndex = slice.indexOf(0);
+        // 3. 如果找到了 0，就截取到 0 为止；如果没找到（全是有效字符），就保留全部
+        const validBytes = zeroIndex !== -1 ? slice.slice(0, zeroIndex) : slice;
+        // 4. 转回字符串
+        const str = String.fromCharCode(...validBytes);
+        cc._appendNetDiagLog(`RX TEST reply-> id=${idHex} addr=${nodeAddr} cmd=${test} 设备ID是：${str}`);
+    }
     cc._canNodeLastSeen[nodeAddr] = Date.now();
 }
 
@@ -277,7 +387,7 @@ export function canHandleDOStatus(cc, frame, nodeAddr) {
     const parsed = CANParser.parseDOStatus(frame);
     if (!parsed) return;
     ['ch1', 'ch2', 'ch3', 'ch4'].forEach((id, i) => {
-        cc.data.do[id].state = parsed[`${ id }State`];
+        cc.data.do[id].state = parsed[`${id}State`];
         cc.data.do[id].fault = !!(parsed.faultByte & (1 << i));
         cc.data.do[id].hold = !!(parsed.holdByte & (1 << i));
     });
@@ -285,8 +395,67 @@ export function canHandleDOStatus(cc, frame, nodeAddr) {
 }
 
 export function canHandleDOReply(cc, frame, nodeAddr) {
-    // 预留：按需实现 DO 配置回复解析
     cc._canNodeLastSeen[nodeAddr] = Date.now();
+    if (!frame || !frame.data || frame.data.length < 4) return;
+
+    const cmd    = frame.data[0];
+    const chIdx  = frame.data[1] & 0x03;
+    const chKeys = ['ch1', 'ch2', 'ch3', 'ch4'];
+    const chId   = chKeys[chIdx];
+    if (!chId) return;
+
+    if (!cc.data.do[chId]) cc.data.do[chId] = {};
+    const doMod = cc.sys?.comps?.['do'];
+
+    // 0x20 — 通道模式回复
+    if (cmd === 0x20) {
+        const modeNames = ['hand', 'auto', 'pulse', 'disable'];
+        const mode = modeNames[frame.data[2] & 0x03] || 'hand';
+        cc.data.do[chId].mode = mode;
+        if (doMod?.channels?.[chId]) doMod.channels[chId].mode = mode;
+        cc._updateDORowFromModule(chId);
+        return;
+    }
+
+    // 0x21 — 脉冲参数回复
+    if (cmd === 0x21) {
+        const onMs  = (frame.data[2] << 8) | frame.data[3];
+        const offMs = (frame.data[4] << 8) | frame.data[5];
+        const phMs  = (frame.data[6] << 8) | frame.data[7];
+        cc.data.do[chId].pulse = { onMs, offMs, phaseMs: phMs };
+        if (doMod?.pulseConfig?.[chId]) {
+            doMod.pulseConfig[chId].onMs  = onMs;
+            doMod.pulseConfig[chId].offMs = offMs;
+            doMod.pulseConfig[chId].phaseStart = phMs;
+        }
+        cc._updateDORowFromModule(chId);
+        return;
+    }
+
+    // 0x22 — 安全输出模式回复
+    if (cmd === 0x22) {
+        const safeModes  = ['off', 'hold', 'preset'];
+        const safeMode   = safeModes[frame.data[2] & 0x03] || 'off';
+        const presetState = !!(frame.data[3] & 0x01);
+        cc.data.do[chId].safeMode    = safeMode;
+        cc.data.do[chId].presetState = presetState;
+        if (doMod?.safeOutput?.[chId]) {
+            doMod.safeOutput[chId].mode        = safeMode;
+            doMod.safeOutput[chId].presetState = presetState;
+        }
+        cc._updateDORowFromModule(chId);
+        return;
+    }
+
+    // 0xEE — 测试回复
+    if (cmd === 0xEE) {
+        const idHex = '0x' + frame.id.toString(16);
+        const slice = frame.data.slice(1);
+        const zeroIndex = slice.indexOf(0);
+        const validBytes = zeroIndex !== -1 ? slice.slice(0, zeroIndex) : slice;
+        const str = String.fromCharCode(...validBytes);
+        cc._appendNetDiagLog(`RX TEST reply-> id=${idHex} addr=${nodeAddr} cmd=0xEE 设备ID是：${str}`);
+    }
 }
 
 // ══════════════════════════════════════════
@@ -349,7 +518,7 @@ export function sendNMTCommand(cc, nodeType, cmd) {
     if (!cc.sys?.canBus || cc.commFault || !cc.busConnected) return;
     const nodeAddrs = { ai: 1, ao: 2, di: 3, do: 4 };
     const addr = nodeAddrs[nodeType]; if (!addr) return;
-    console.log(`[CC] NMT: Sending 0x${ cmd.toString(16) } to ${ nodeType }(addr = ${ addr })`);
+    console.log(`[CC] NMT: Sending 0x${cmd.toString(16)} to ${nodeType}(addr = ${addr})`);
     cc.sys.canBus.sendNMT(cc.id, cmd, addr);
     if (cmd === NMT_CMD.START) cc.nmtNodeStates[nodeType] = NMT_STATE.RUN;
     else if (cmd === NMT_CMD.STOP) cc.nmtNodeStates[nodeType] = NMT_STATE.STOP;
@@ -409,4 +578,38 @@ export function _bytesToInt16(b1, b2) {
         value = -(0x10000 - value);
     }
     return value;
+}
+
+export function initAOParams(cc) {
+    // 初始化时读取AO模块的4个通道的参数（模式、LRV、URV、安全输出配置）
+    ['ch1', 'ch2', 'ch3', 'ch4'].forEach((_, idx) => {
+        // 发送0x14参数读取请求
+        setTimeout(() => {
+            cc._requestNodeConfig('ao', 0x14, idx);
+        }, 40 + idx * 10);
+
+        // 发送0x15安全输出配置读取请求
+        setTimeout(() => {
+            cc._requestNodeConfig('ao', 0x15, idx);
+        }, 80 + idx * 10);
+    });
+}
+
+/** 批量请求 DI 模块所有通道的初始参数（报警触发方式） */
+export function initDIParams(cc) {
+    // 发送 0x04 查询重计：需要阐读每个通道的报警触发配置
+    ['ch1', 'ch2', 'ch3', 'ch4'].forEach((_, idx) => {
+        setTimeout(() => {
+            cc._requestNodeConfig('di', 0x04, idx);  // 0x04: 查询报警配置
+        }, 40 + idx * 10);
+    });
+}
+
+/** 批量请求 DO 模块所有通道的初始参数（模式、脉冲参数、安全输出） */
+export function initDOParams(cc) {
+    ['ch1', 'ch2', 'ch3', 'ch4'].forEach((_, idx) => {
+        setTimeout(() => cc._requestNodeConfig('do', 0x20, idx), 40  + idx * 15); // 通道模式
+        setTimeout(() => cc._requestNodeConfig('do', 0x21, idx), 110 + idx * 15); // 脉冲参数
+        setTimeout(() => cc._requestNodeConfig('do', 0x22, idx), 180 + idx * 15); // 安全输出
+    });
 }

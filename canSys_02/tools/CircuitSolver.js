@@ -41,6 +41,8 @@ export class CircuitSolver {
     // 主循环
     // ═══════════════════════════════════════════════════════════════════════
     update() {
+        //        console.log(sys.comps,this.rawDevices); 前者是对象形式，后者是数字形式。
+
         this.portToCluster.clear();
         this.nodeVoltages.clear();
         this.gndClusterIndices.clear();
@@ -62,9 +64,9 @@ export class CircuitSolver {
     // ═══════════════════════════════════════════════════════════════════════
     _buildTopology() {
         const result = this._topology.build(this.rawDevices, this.connections);
-        this.portToCluster = result.portToCluster;
+        this.portToCluster = result.portToCluster;  //每个簇有都有编号，pordID 与编号的对应映射关系。
         this.clusterCount = result.clusterCount;
-        this.clusters = result.clusters;
+        this.clusters = result.clusters;//这是端口ID簇，每个簇里面是导线连接在一起的，或通过union方式连到一起
     }
 
     _invalidateCacheIfNeeded() {
@@ -77,18 +79,27 @@ export class CircuitSolver {
                     resistSigs.push(`${d.id}_r1:${d.r1 || 0}`);
                     resistSigs.push(`${d.id}_r2:${d.r2 || 0}`);
                 }
-                if (d.special === 'can') resistSigs.push(`${d.id}:${d.currentResistance || 0}`);
+                if (d.special === 'can') {
+                    resistSigs.push(`${d.id}:${d.currentResistance || 0}`);
+                    if (d.type === 'DO') {
+                        resistSigs.push(`${d.id}_ch1:${d.ch1R || 0}`);
+                        resistSigs.push(`${d.id}_ch2:${d.ch2R || 0}`);
+                    }
+
+                }
                 if (d.type === 'relay' && d.special === 'voltage') resistSigs.push(`${d.id}:${d.currentResistance || 0}`);
                 if (d.type === 'tc') resistSigs.push(`${d.id}:${d.currentResistance || 0}`);
-                if(d.type === 'calibrator'){
-                    resistSigs.push(`${d.id}:${d.sourceValue || 0}`);}
+                if (d.type === 'calibrator') {
+                    resistSigs.push(`${d.id}:${d.sourceValue || 0}`);
+                }
 
             }
             resistSigs.sort();
             const sig = connKeys.join('|') + '|' + resistSigs.join('|');
+            // console.log (sig,this._equivResCache);
             if (sig !== this._topologySig) {
                 this._topologySig = sig;
-                this._equivResCache.clear();
+                this._equivResCache.clear(); //电阻缓存对象，先从这里面查端口号之间的电阻值，查不到再计算。
             }
         } catch (e) { /* ignore */ }
     }
@@ -122,12 +133,15 @@ export class CircuitSolver {
         const relayDevs = raw.filter(d => d.type === 'relay' && d.special === 'voltage');
         const aiDevs = raw.filter(d => d.type === 'AI');
         const pcDevs = raw.filter(d => d.type === 'calibrator');
+        const aoDevs = raw.filter(d => d.type === 'AO');
+        const diDevs = raw.filter(d => d.type === 'DI');
+        const doDevs = raw.filter(d => d.type === 'DO');
 
         this._cachedDevs = {
             gndDevs, powerDevs, power3Devs, tcDevs, pidDevs, bjtDevs, opAmps,
             oscDevs, osc3Devs, diodeDevs, resistorDevs, pressDevs, transmitterDevs,
             capacitorDevs, inductorDevs, lvdtDevs, sgDevs, jfetDevs, relayDevs, aiDevs,
-            pcDevs,
+            pcDevs, aoDevs, diDevs, doDevs,
         };
 
         // ── 识别 GND / 已知电源节点 ──────────────────────────────────────
@@ -140,7 +154,7 @@ export class CircuitSolver {
             const nIdx = this.portToCluster.get(`${p.id}_wire_n`);
             if (nIdx !== undefined) this.gndClusterIndices.add(nIdx);
         });
-
+        // ---运算放大器默认为线性状态。
         if (!this._opAmpsInitialized) {
             opAmps.forEach(op => op.internalState = 'linear');
             this._opAmpsInitialized = true;
@@ -148,13 +162,14 @@ export class CircuitSolver {
 
         // ── 建立节点映射 ─────────────────────────────────────────────────
         const nodeMap = new Map();
-        let mSize = 0;
+        let mSize = 0;  //这个是位置的节点电压的数量。
         for (let i = 0; i < this.clusterCount; i++) {
             if (!this.gndClusterIndices.has(i) && !this.vPosMap.has(i)) nodeMap.set(i, mSize++);
         }
         if (mSize === 0) { this._assignKnown(); return; }
 
         // ── 统计额外电压源方程数（DC/AC/三相电源采用诺顿等效，不增加行数）─
+        // PID 设备增加的电压方程数，4-20mA回路供电。4-20mA限制电压或者PWM输出电压。
         let pidEqCount = 0;
         pidDevs.forEach(pid => {
             if (this.portToCluster.has(`${pid.id}_wire_pi1`) && this.portToCluster.has(`${pid.id}_wire_ni1`)) pidEqCount++;
@@ -178,8 +193,8 @@ export class CircuitSolver {
                 aiEqCount++;
             }
         });
+        // 过程校验仪增加的方程，两个4-20mA电流回路24V电源，电压源。
         let pcEqCount = 0;
-        // 统计过程校验仪需要的额外方程
         pcDevs.forEach(pc => {
             if (!pc.isPowered) return;
             const p = `${pc.id}_wire_`;
@@ -209,18 +224,32 @@ export class CircuitSolver {
                 }
             }
         });
-        const totalSize = mSize + pidEqCount + opAmps.length + oscDevs.length + lvdtDevs.length + aiEqCount + pcEqCount;
-        let results = new Float64Array(totalSize);
+        // ── 统计额外电压源方程数（AO模块的PWM输出）─
+        let aoEqCount = 0;
+        aoDevs.forEach(ao => {
+            if (this.portToCluster.has(`${ao.id}_wire_ch3p`) && this.portToCluster.has(`${ao.id}_wire_ch3n`)) aoEqCount++;
+            if (this.portToCluster.has(`${ao.id}_wire_ch4p`) && this.portToCluster.has(`${ao.id}_wire_ch4n`)) aoEqCount++;
+        });
+        // ── 统计额外电压源方程数（DO模块的24V输出）─
+        let doEqCount = 0;
+        doDevs.forEach(dev => {
+            if (this.portToCluster.has(`${dev.id}_wire_ch3p`) && this.portToCluster.has(`${dev.id}_wire_ch3n`)) doEqCount++;
+            if (this.portToCluster.has(`${dev.id}_wire_ch4p`) && this.portToCluster.has(`${dev.id}_wire_ch4n`)) doEqCount++;
+        });
+        // ---总的方程数量。
+        const totalSize = mSize + pidEqCount + opAmps.length + oscDevs.length + lvdtDevs.length + aiEqCount + pcEqCount + aoEqCount + doEqCount;
 
+        // G是矩阵，B是结果相量，results是解相量，都是64位浮点数
+        let results = new Float64Array(totalSize);
         const G = Array.from({ length: totalSize }, () => new Float64Array(totalSize));
         const B = new Float64Array(totalSize);
 
         // ── 构建传给 DeviceStamps 的上下文对象 ───────────────────────────
         const ctx = {
-            portToCluster: this.portToCluster,
-            nodeMap,
-            gndClusterIndices: this.gndClusterIndices,
-            vPosMap: this.vPosMap,
+            portToCluster: this.portToCluster,  //这是端点ID与 簇号的映射。
+            nodeMap,  //这是节点号 与 簇号的映射。
+            gndClusterIndices: this.gndClusterIndices,  //这是接地的簇号集合
+            vPosMap: this.vPosMap,  // 这是簇号与电压的映射
             clusters: this.clusters,
             getVoltageFromResults: (res, cIdx) =>
                 CircuitUtils.getVoltageFromResults(res, nodeMap, this.gndClusterIndices, this.vPosMap, cIdx),
@@ -228,6 +257,7 @@ export class CircuitSolver {
             getEquivalentResistance: (a, b, all) =>
                 this._getEquivalentResistance(a, b, all),
             calcTransmitterCurrent: (dev) => this._calcTransmitterCurrent(dev),
+            deltaTime: this.deltaTime,
         };
 
         // ── 迭代求解 ─────────────────────────────────────────────────────
@@ -244,8 +274,8 @@ export class CircuitSolver {
             // ─ 3. 变送器 ───────────────────────────────────────────────────
             DeviceStamps.stampTransmitters(ctx, G, B, transmitterDevs);
             // ─ 4. 电源 & 5. 三相电源（诺顿等效注入，不增加方程）──────────
-            DeviceStamps.stampPowerSources(ctx, G, B, powerDevs, 0, currentTime);
-            DeviceStamps.stampPower3Sources(ctx, G, B, power3Devs, 0, currentTime);
+            DeviceStamps.stampPowerSources(ctx, G, B, powerDevs, currentTime);
+            DeviceStamps.stampPower3Sources(ctx, G, B, power3Devs, currentTime);
 
             // ─ 6. PID 控制器 ──────────────────────────────────────────────
             let pidVIdx = mSize;
@@ -254,7 +284,7 @@ export class CircuitSolver {
             // ─ 7. 热电偶（诺顿等效注入，不增加方程）──────────────────────
             DeviceStamps.stampThermocouples(ctx, G, B, tcDevs);
             // ─ 8. 运放 ─────────────────────────────────────────────────────
-            const opVIdx = mSize + pidEqCount;
+            const opVIdx = pidVIdx + pidEqCount;
             DeviceStamps.stampOpAmps(ctx, G, B, opAmps, opVIdx);
             // ─ 9. 二极管 ───────────────────────────────────────────────────
             DeviceStamps.stampDiodes(ctx, G, B, diodeDevs, results);
@@ -266,7 +296,7 @@ export class CircuitSolver {
             DeviceStamps.stampReactives(ctx, G, B, capacitorDevs, this.deltaTime);
             DeviceStamps.stampReactives(ctx, G, B, inductorDevs, this.deltaTime);
             // ─ 13. 示波器 ──────────────────────────────────────────────────
-            const oscVIdx = mSize + pidEqCount + opAmps.length;
+            const oscVIdx = opVIdx + opAmps.length;
             DeviceStamps.stampOscilloscopes(ctx, G, B, oscDevs, oscVIdx);
             // ─ 14. LVDT / 压力变送器 ───────────────────────────────────────
             const ptVIdx = oscVIdx + oscDevs.length;
@@ -277,10 +307,18 @@ export class CircuitSolver {
             DeviceStamps.stampRelays(ctx, G, B, relayDevs);
             // ─ 17 AI 模块 ────────────────────────────────────────────────
             const aiVIdx = ptVIdx + lvdtDevs.length;
-            const pcVIdx = DeviceStamps.stampAI(ctx, G, B, aiDevs, aiVIdx);
+            DeviceStamps.stampAI(ctx, G, B, aiDevs, aiVIdx);
             // ─ 18 过程校验仪 ───────────────────────────────────────────────
-            DeviceStamps.stampCalibrators(ctx, G, B, pcDevs, pcVIdx,currentTime);
-
+            const pcVIdx = aiVIdx + aiEqCount;
+            DeviceStamps.stampCalibrators(ctx, G, B, pcDevs, pcVIdx, currentTime);
+            // ─ 19 AO 模块 ────────────────────────────────────────────────
+            const aoVIdx = pcVIdx + pcEqCount;
+            DeviceStamps.stampAO(ctx, G, B, aoDevs, aoVIdx);
+            // - 20 DI 模块
+            DeviceStamps.stampDI(ctx, G, B, diDevs);
+            // - 21 DO 模块
+            const doVIdx = aoVIdx + aoEqCount;
+            DeviceStamps.stampDO(ctx, G, B, doDevs, doVIdx);
 
             // Gmin 防奇异
             for (let i = 0; i < totalSize; i++) G[i][i] += 1e-12;
@@ -290,10 +328,11 @@ export class CircuitSolver {
             for (let i = 0; i < totalSize; i++)
                 maxError = Math.max(maxError, Math.abs(nextResults[i] - results[i]));
 
-            // 阻尼更新
+            // 阻尼更新，nodeMap的每一项是  簇号、节点号的映射。
             nodeMap.forEach((mIdx, cIdx) => {
                 const oldV = this.nodeVoltages.get(cIdx) || 0;
                 const rawNewV = nextResults[mIdx];
+                //nextResults：节点号与电压的映射数组。
                 if (this.vPosMap.has(cIdx)) { this.nodeVoltages.set(cIdx, rawNewV); return; }
 
                 const damping = 0.3;
@@ -338,185 +377,138 @@ export class CircuitSolver {
         this._updateDeviceCurrents(this._cachedDevs, results);
     }
 
-    // ── 统一计算所有设备的电流（取代原 CurrentReadback 阶段）────────────
+    // ── 统一计算所有设备的电流，进行状态回填（取代原 CurrentReadback 阶段）────────────
     // 序号对应 DeviceStamps 中各 stamp 方法的顺序
     _updateDeviceCurrents(devices, results) {
         const {
             resistorDevs, pressDevs, transmitterDevs, pidDevs, tcDevs, opAmps,
             diodeDevs, bjtDevs, jfetDevs, capacitorDevs, inductorDevs,
             oscDevs, lvdtDevs, sgDevs, powerDevs, power3Devs, relayDevs, aiDevs,
-            pcDevs,
+            pcDevs, aoDevs, diDevs, doDevs,
         } = devices;
+        // --- 内部辅助：安全获取端口电压 ---
+        const getV = (devId, portName) => {
+            const clusterId = this.portToCluster.get(`${devId}_wire_${portName}`);
+            if (clusterId === undefined) return undefined;
+            return this.nodeVoltages.get(clusterId) || 0;
+        };
 
         // ─ 1. 电阻电流（对应 stampResistors）
         resistorDevs.forEach(dev => {
-            if (dev.currentResistance < 0.1) return;
-            const cL = this.portToCluster.get(`${dev.id}_wire_l`);
-            const cR = this.portToCluster.get(`${dev.id}_wire_r`);
-            const vL = this.nodeVoltages.get(cL) || 0;
-            const vR = this.nodeVoltages.get(cR) || 0;
-            dev.physCurrent = (vL - vR) / dev.currentResistance;
+            const vL = getV(dev.id, 'l') ?? 0;
+            const vR = getV(dev.id, 'r') ?? 0;
+            dev.physCurrent = dev.currentResistance > 0.1 ? (vL - vR) / dev.currentResistance : 0;
         });
 
         // ─ 2. 压力传感器电流（对应 stampPressureSensors）
         pressDevs.forEach(dev => {
-            const c1l = this.portToCluster.get(`${dev.id}_wire_r1l`);
-            const c1r = this.portToCluster.get(`${dev.id}_wire_r1r`);
-            const c2l = this.portToCluster.get(`${dev.id}_wire_r2l`);
-            const c2r = this.portToCluster.get(`${dev.id}_wire_r2r`);
-            dev.r1Current = ((this.nodeVoltages.get(c1l) || 0) - (this.nodeVoltages.get(c1r) || 0)) / Math.max(0.001, dev.r1);
-            dev.r2Current = ((this.nodeVoltages.get(c2l) || 0) - (this.nodeVoltages.get(c2r) || 0)) / Math.max(0.001, dev.r2);
+            const v1l = getV(dev.id, 'r1l') ?? 0;
+            const v1r = getV(dev.id, 'r1r') ?? 0;
+            const v2l = getV(dev.id, 'r2l') ?? 0;
+            const v2r = getV(dev.id, 'r2r') ?? 0;
+            dev.r1Current = (v1l - v1r) / Math.max(0.001, dev.r1);
+            dev.r2Current = (v2l - v2r) / Math.max(0.001, dev.r2);
         });
 
         // ─ 3. 变送器缓存压差（对应 stampTransmitters）
         transmitterDevs.forEach(dev => {
-            const pV = this.getVoltageAtPort(`${dev.id}_wire_p`);
-            const nV = this.getVoltageAtPort(`${dev.id}_wire_n`);
-            dev._lastVDiff = pV - nV;
+            const vP = getV(dev.id, 'p') ?? 0;
+            const vN = getV(dev.id, 'n') ?? 0;
+            dev._lastVDiff = vP - vN;
+            dev.physCurrent = dev._lastVDiff > 10 ? dev._lastG * dev._lastVDiff : 0;
         });
 
         // ─ 4. 电源电流（对应 stampPowerSources）
         powerDevs.forEach(dev => {
-            const cP = this.portToCluster.get(`${dev.id}_wire_p`);
-            const cN = this.portToCluster.get(`${dev.id}_wire_n`);
-            if (cP === undefined || cN === undefined) return;
-            const vDiff = (this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0);
-            const rOn = dev.rOn || 0.1;
-            const voltage = dev.getValue(this.currentTime);
-            dev.physCurrent = (voltage - vDiff) / rOn;
+            const vP = getV(dev.id, 'p');
+            const vN = getV(dev.id, 'n');
+            if (vP !== undefined && vN !== undefined) {
+                const vOut = dev.getValue(this.currentTime);
+                dev.physCurrent = (vOut - (vP - vN)) / (dev.rOn || 0.1);
+            }
         });
 
         // ─ 5. 三相电源电流（对应 stampPower3Sources）
         power3Devs.forEach(dev => {
+            const vN = getV(dev.id, 'n') ?? 0;
             dev.phaseCurrents = { u: 0, v: 0, w: 0 };
             ['u', 'v', 'w'].forEach(phase => {
-                const cP = this.portToCluster.get(`${dev.id}_wire_${phase}`);
-                const cN = this.portToCluster.get(`${dev.id}_wire_n`);
-                if (cP === undefined || cN === undefined) return;
-                const vDiff = (this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0);
-                const rOn = dev.rOn || 0.1;
-                const voltage = dev.getPhaseVoltage(phase, this.currentTime);
-                dev.phaseCurrents[phase] = (voltage - vDiff) / rOn;
+                const vP = getV(dev.id, phase);
+                if (vP !== undefined) {
+                    const vTarget = dev.getPhaseVoltage(phase, this.currentTime);
+                    dev.phaseCurrents[phase] = (vTarget - (vP - vN)) / (dev.rOn || 0.1);
+                }
             });
         });
 
         // ─ 6. PID 电流（对应 stampPIDs）
         pidDevs.forEach(pid => {
             if (!pid.powerOn) return;
-            if (pid._ch1CurrentInfo) {
-                const info = pid._ch1CurrentInfo;
-                if (info.mode === 'voltage') {
-                    pid.ch1Current = Math.abs(results[info.index]) * 1000;
-                } else {
-                    pid.ch1Current = info.valueA * 1000;
-                }
-                pid._ch1CurrentInfo = null;
-            } else if (pid.ch1VSourceIdx !== undefined) {
-                pid.ch1Current = results[pid.ch1VSourceIdx] * 1000;
-            }
-            if (pid._ch2CurrentInfo) {
-                const info = pid._ch2CurrentInfo;
-                if (info.mode === 'voltage') {
-                    pid.ch2Current = Math.abs(results[info.index]) * 1000;
-                } else {
-                    pid.ch2Current = info.valueA * 1000;
-                }
-                pid._ch2CurrentInfo = null;
-            } else if (pid.ch2VSourceIdx !== undefined) {
-                pid.ch2Current = results[pid.ch2VSourceIdx] * 1000;
-            }
+            this._updatePIDChannels(pid, getV, results);
         });
 
         // ─ 7. 热电偶电流（对应 stampThermocouples）诺顿等效模型
-        tcDevs.forEach(tc => {
-            const cP = this.portToCluster.get(`${tc.id}_wire_r`);
-            const cN = this.portToCluster.get(`${tc.id}_wire_l`);
-            if (cP !== undefined && cN !== undefined) {
-                const vDiff = (this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0);
-                const rInt = tc.currentResistance || 0.5;
-                const voltage = tc.currentVoltage;
-                tc.physCurrent = (voltage - vDiff) / rInt;
+        tcDevs.forEach(dev => {
+            const vP = getV(dev.id, 'r'); // 正极 (Red/Positive)
+            const vN = getV(dev.id, 'l'); // 负极 (Blue/Negative)
+
+            if (vP !== undefined && vN !== undefined) {
+                const vDiff = vP - vN;
+                const rInt = dev.currentResistance || 0.5; // 热电偶典型内阻很小
+                const vGen = dev.currentVoltage; // 根据温度梯度生成的温差电动势 (mV -> V)
+
+                // 物理电流计算：(生成的电动势 - 端口压差) / 内阻
+                dev.physCurrent = (vGen - vDiff) / rInt;
+            } else {
+                dev.physCurrent = 0;
             }
         });
 
         // ─ 8. 运放电流（对应 stampOpAmps）
         opAmps.forEach(op => {
-            if (op.currentIdx !== undefined) op.outCurrent = results[op.currentIdx];
+            if (op.currentIdx !== undefined) op.physCurrent = results[op.currentIdx];
         });
 
         // ─ 9. 二极管电流（对应 stampDiodes）
         diodeDevs.forEach(dev => {
-            const cA = this.portToCluster.get(`${dev.id}_wire_l`);
-            const cC = this.portToCluster.get(`${dev.id}_wire_r`);
-            const vA = this.nodeVoltages.get(cA) || 0;
-            const vC = this.nodeVoltages.get(cC) || 0;
+            const vA = getV(dev.id, 'l') ?? 0;
+            const vC = getV(dev.id, 'r') ?? 0;
             const vDiff = vA - vC;
-            const vForward = dev.vForward || 0.68;
+            const vF = dev.vForward || 0.68;
             const rOn = dev.rOn || 0.5;
-            dev.physCurrent = (vDiff > vForward) ? (1 / rOn) * (vDiff - vForward) : 0;
+            dev.physCurrent = (vDiff > vF) ? (vDiff - vF) / rOn : 0;
         });
 
         // ─ 10. BJT 电流（对应 stampBJTs）
         bjtDevs.forEach(dev => {
-            const cB = this.portToCluster.get(`${dev.id}_wire_b`);
-            const cC = this.portToCluster.get(`${dev.id}_wire_c`);
-            const cE = this.portToCluster.get(`${dev.id}_wire_e`);
-            const vB = this.nodeVoltages.get(cB) || 0;
-            const vC = this.nodeVoltages.get(cC) || 0;
-            const vE = this.nodeVoltages.get(cE) || 0;
-
-            dev.physCurrents = { b: 0, c: 0, e: 0 };
+            const vB = getV(dev.id, 'b') ?? 0;
+            const vC = getV(dev.id, 'c') ?? 0;
+            const vE = getV(dev.id, 'e') ?? 0;
             const model = dev.getCompanionModel(vB, vC, vE);
             const { gBE, iBE, beta, gCE_sat, pol, V_SAT } = model.internal;
 
-            if (cB !== undefined && cE !== undefined && (cC === undefined || cC === cB)) {
-                const vDiff = (vB - vE) * pol;
-                const Ib = (vDiff > 0.7) ? 2 * (vDiff - 0.7) : 0;
-                dev.physCurrents.b = Ib * pol;
-                dev.physCurrents.e = -dev.physCurrents.b;
-            } else if (cB !== undefined && cC !== undefined && (cE === undefined || cE === cB)) {
-                const vDiff = (vB - vC) * pol;
-                const Ib = (vDiff > 0.7) ? 2 * (vDiff - 0.7) : 0;
-                dev.physCurrents.b = Ib * pol;
-                dev.physCurrents.c = -dev.physCurrents.b;
-            } else {
-                const vbeLocal = (vB - vE) * pol;
-                const vceLocal = (vC - vE) * pol;
-                const Ib = pol * (gBE * vbeLocal + iBE);
-                const Ic = (beta * Ib) + pol * (gCE_sat * (vceLocal - V_SAT));
-                dev.physCurrents.b = Ib;
-                dev.physCurrents.c = Ic;
-                dev.physCurrents.e = -(Ib + Ic);
-            }
+            const vbeLocal = (vB - vE) * pol;
+            const vceLocal = (vC - vE) * pol;
+            const Ib = pol * (gBE * vbeLocal + iBE);
+            const Ic = (beta * Ib) + pol * (gCE_sat * (vceLocal - V_SAT));
+
+            dev.physCurrents = { b: Ib, c: Ic, e: -(Ib + Ic) };
         });
 
         // ─ 11. JFET 电流（对应 stampJFETs）
         jfetDevs.forEach(dev => {
-            const cD = this.portToCluster.get(`${dev.id}_wire_d`);
-            const cS = this.portToCluster.get(`${dev.id}_wire_s`);
-            const vD = this.nodeVoltages.get(cD) || 0;
-            const vS = this.nodeVoltages.get(cS) || 0;
+            const vD = getV(dev.id, 'd') ?? 0;
+            const vS = getV(dev.id, 's') ?? 0;
             const res = dev.getDSResistance(vD - vS);
             dev.physCurrent = (vD - vS) / res;
         });
 
         // ─ 12.1 & 12.2 电容/电感（对应 stampReactives）
-        capacitorDevs.forEach(dev => {
-            const cL = this.portToCluster.get(`${dev.id}_wire_l`);
-            const cR = this.portToCluster.get(`${dev.id}_wire_r`);
-            const vL = this.nodeVoltages.get(cL) || 0;
-            const vR = this.nodeVoltages.get(cR) || 0;
+        [...capacitorDevs, ...inductorDevs].forEach(dev => {
+            const vL = getV(dev.id, 'l') ?? 0;
+            const vR = getV(dev.id, 'r') ?? 0;
             dev.calculatePhysicalCurrent(vL, vR, this.deltaTime);
             dev.updateState(vL, vR);
-        });
-
-        inductorDevs.forEach(dev => {
-            const cL = this.portToCluster.get(`${dev.id}_wire_l`);
-            const cR = this.portToCluster.get(`${dev.id}_wire_r`);
-            const vL = this.nodeVoltages.get(cL) || 0;
-            const vR = this.nodeVoltages.get(cR) || 0;
-            dev.calculatePhysicalCurrent(vL, vR, this.deltaTime);
-            dev.updateState();
         });
 
         // ─ 13. 示波器电流（对应 stampOscilloscopes）
@@ -531,251 +523,283 @@ export class CircuitSolver {
 
         // ─ 15. 信号发生器电流（对应 stampSignalGenerators）
         sgDevs.forEach(sg => {
-            [
-                { key: 'ch1', p: 'ch1p', n: 'ch1n', idx: 0 },
-                { key: 'ch2', p: 'ch2p', n: 'ch2n', idx: 1 }
-            ].forEach(chCfg => {
-                const ch = sg.channels[chCfg.idx];
-                const portP = this.portToCluster.get(`${sg.id}_wire_${chCfg.p}`);
-                const portN = this.portToCluster.get(`${sg.id}_wire_${chCfg.n}`);
-
-                if (ch.enabled && portP !== undefined && portN !== undefined) {
-                    const vP = this.nodeVoltages.get(portP) || 0;
-                    const vN = this.nodeVoltages.get(portN) || 0;
-
-                    // 诺顿模型下的负载电流计算：
-                    // I_load = Is - (vP - vN) * Gs
-                    // 其中 Is 是内部理想电流源，Gs 是 1/50 欧姆
-                    const Vs = sg.voltOutputs[chCfg.key]; // 理想电压
-                    const Rs = 50;
-
-                    // 这里的电流是从 P 流向 N 的外部电流
-                    const current = (Vs - (vP - vN)) / Rs;
-
-                    if (chCfg.idx === 0) sg.ch1Current = current;
-                    else sg.ch2Current = current;
+            const channels = [{ k: 'ch1', p: 'ch1p', n: 'ch1n' }, { k: 'ch2', p: 'ch2p', n: 'ch2n' }];
+            channels.forEach((cfg, idx) => {
+                const ch = sg.channels[idx];
+                const vP = getV(sg.id, cfg.p);
+                const vN = getV(sg.id, cfg.n);
+                if (ch.enabled && vP !== undefined && vN !== undefined) {
+                    const Vs = sg.voltOutputs[cfg.k];
+                    sg[`${cfg.k}Current`] = (Vs - (vP - vN)) / 50; // 50Ω 内阻
                 } else {
-                    if (chCfg.idx === 0) sg.ch1Current = 0;
-                    else sg.ch2Current = 0;
+                    sg[`${cfg.k}Current`] = 0;
                 }
             });
         });
         // ─ 16 电压型继电器线圈电流（对应 stampRelays）
         relayDevs.forEach(dev => {
-            const cL = this.portToCluster.get(`${dev.id}_wire_l`);
-            const cR = this.portToCluster.get(`${dev.id}_wire_r`);
-            if (cL !== undefined && cR !== undefined) {
-                const vL = this.nodeVoltages.get(cL) || 0;
-                const vR = this.nodeVoltages.get(cR) || 0;
-                const R = dev.currentResistance || 1000;
-                dev.physCurrent = (vL - vR) / R;
+            const vL = getV(dev.id, 'l');
+            const vR = getV(dev.id, 'r');
+            if (vL !== undefined && vR !== undefined) {
+                dev.physCurrent = (vL - vR) / (dev.currentResistance || 1000);
+            }
+            const vNO = getV(dev.id, 'NO');
+            const vCOM = getV(dev.id, 'COM');
+            if (vNO !== undefined && vCOM !== undefined) {
+                const R = dev.isEnergized?0.01:1e9;
+                dev.contactCurrent = (vNO - vCOM) / R;
             }
         });
 
-        // ─ 17. AI 模块电流（对应 stampAI）
-        aiDevs.forEach(dev => {
-            if (!dev.powerOn) return;
-            const cP = this.portToCluster.get(`${dev.id}_wire_vcc`);
-            const cN = this.portToCluster.get(`${dev.id}_wire_gnd`);
-            if (cP === undefined || cN === undefined) return;
-            const vDiff = (this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0);
-            dev.physCurrent = vDiff / 50;
+        // ─ 17. 19. 20. 21 AI/AO/DI/DO 模块电流
+        const ioModules = [
+            { devs: aiDevs, update: this._updateAIChannels.bind(this) },
+            { devs: aoDevs, update: this._updateAOChannels.bind(this) },
+            { devs: diDevs, update: null },
+            { devs: doDevs, update: this._updateDOChannels.bind(this) }
+        ];
 
-            // CH1 (4-20mA) - 读取电流（从 ch1p 到 ch1n 的电压差除以 250Ω 采样电阻）
-            const c_ch1p = this.portToCluster.get(`${dev.id}_wire_ch1p`);
-            const c_ch1n = this.portToCluster.get(`${dev.id}_wire_ch1n`);
-            if (c_ch1p !== undefined && c_ch1n !== undefined) {
-                const v_ch1n = this.nodeVoltages.get(c_ch1n) || 0;
-                dev.ch1Current = v_ch1n / 250; // 250Ω 采样电阻，得到电流（A）
-                dev.setRaw('ch1', dev.ch1Current * 1000); // 注入 CH1
-            }
-            else {
-                dev.ch1Current = 0;
-                dev.setRaw('ch1', 0); // 注入 CH1
-            }
-
-            // CH2 (4-20mA) - 读取电流（从 ch2p 到 ch2n 的电压差除以 250Ω 采样电阻）
-            const c_ch2p = this.portToCluster.get(`${dev.id}_wire_ch2p`);
-            const c_ch2n = this.portToCluster.get(`${dev.id}_wire_ch2n`);
-            if (c_ch2p !== undefined && c_ch2n !== undefined) {
-                const v_ch2n = this.nodeVoltages.get(c_ch2n) || 0;
-                dev.ch2Current = v_ch2n / 250; // 250Ω 采样电阻
-                dev.setRaw('ch2', dev.ch2Current * 1000); // 注入 CH2
-            }
-            else {
-                dev.ch2Current = 0;
-                dev.setRaw('ch2', 0); // 注入 CH2
-            }
-            // CH3 (RTD/PT100) - 读取电阻值
-            const c_ch3p = this.portToCluster.get(`${dev.id}_wire_ch3p`);
-            const c_ch3n = this.portToCluster.get(`${dev.id}_wire_ch3n`);
-            if (c_ch3p !== undefined && c_ch3n !== undefined) {
-                const v_ch3p = this.nodeVoltages.get(c_ch3p) || 0;
-                const v_ch3n = this.nodeVoltages.get(c_ch3n) || 0;
-                // 计算等效电阻：需要通过等效电阻计算接口
-                const equiv_r = this._getEquivalentResistance(
-                    this.clusters[c_ch3p], this.clusters[c_ch3n], this.clusters
-                );
-                dev.ch3Current = (v_ch3p - v_ch3n) / equiv_r;
-                dev.setRaw('ch3', equiv_r); // 注入 CH3（Ω 为单位）
-            }
-            else {
-                dev.ch3Current = 0
-                dev.setRaw('ch3', 1000000); // 注入 CH3（Ω 为单位）
-            }
-
-            // CH4 (TC/热电偶) - 读取电压
-            const c_ch4p = this.portToCluster.get(`${dev.id}_wire_ch4p`);
-            const c_ch4n = this.portToCluster.get(`${dev.id}_wire_ch4n`);
-            if (c_ch4p !== undefined && c_ch4n !== undefined) {
-                const equiv_r = this._getEquivalentResistance(
-                    this.clusters[c_ch4p], this.clusters[c_ch4n], this.clusters
-                );
-                if (equiv_r > 50) {
-                    dev.setRaw('ch4', -100);
+        ioModules.forEach(group => {
+            group.devs.forEach(dev => {
+                if (!dev.powerOn) return;
+                const vcc = getV(dev.id, 'vcc');
+                const gnd = getV(dev.id, 'gnd');
+                if (vcc !== undefined && gnd !== undefined) {
+                    dev.physCurrent = (vcc - gnd) / 50;
+                    if (group.update) group.update(dev, getV);
                 }
-                const v_ch4 = (this.nodeVoltages.get(c_ch4p) || 0) - (this.nodeVoltages.get(c_ch4n) || 0);
-                const v_ch4_mV = v_ch4 * 1000; // 转换为 mV
-                dev.setRaw('ch4', v_ch4_mV); // 注入 CH4（mV 为单位）
-            }
-            else {
-                dev.setRaw('ch4', -100); // 注入 CH3（Ω 为单位）
-            }
-
-            // CAN 端口：当终端开关有效时，注入 120Ω 电阻
-            const c_can1p = this.portToCluster.get(`${dev.id}_wire_can1p`);
-            const c_can1n = this.portToCluster.get(`${dev.id}_wire_can1n`);
-            const c_can2p = this.portToCluster.get(`${dev.id}_wire_can2p`);
-            const c_can2n = this.portToCluster.get(`${dev.id}_wire_can2n`);
-
-            if (dev.termEnabled) {
-                if (c_can1p !== undefined && c_can1n !== undefined) {
-                    // 终端电阻已通过 stampAI 在 G 矩阵中注入
-                }
-                if (c_can2p !== undefined && c_can2n !== undefined) {
-                    // 终端电阻已通过 stampAI 在 G 矩阵中注入
-                }
-            }
+            });
         });
         // ─ 18. 过程校验仪电流（对应 stampCalibrators）根据不同模式计算电流
         pcDevs.forEach(dev => {
-            if (!dev.isPowered) return;
-            const p = `${dev.id}_wire_`;
-            const cMa = this.portToCluster.get(`${p}meas_ma`);
-            const cCom = this.portToCluster.get(`${p}meas_com`);
-            const cSMa = this.portToCluster.get(`${p}src_ma`);
-            const cSCom = this.portToCluster.get(`${p}src_com`);
-            const cSV = this.portToCluster.get(`${p}src_v`);
-            if (cMa !== undefined && cCom !== undefined) {
-                if (dev.upMode === 'MEAS_LOOP') {
-                    // MEAS_LOOP 模式：从 meas_ma 注入 24V 电压源，通过 meas_com 到 GND 的 250Ω 电阻                
-                    const vCom = this.getVoltageAtPort(`${p}meas_com`);
-                    const iMeas = vCom / 250;  // 通过采样电阻的电流
-                    dev.upCurrent = iMeas;
-                } else if (dev.upMode === 'MEAS_MA') {
-                    // SRC_MA 模式：从 src_ma 注入设定电流，通过 src_com 到 GND 的 250Ω 电阻
-                    const vMa = this.getVoltageAtPort(`${p}meas_ma`);
-                    const vCom = this.getVoltageAtPort(`${p}meas_com`);
-                    const iMeas = (vMa - vCom) / 250; // 转换为 A
-                    dev.upCurrent = iMeas;
-                } else {
-                    dev.upCurrent = 0;
-                }
-            }
-            else {
-                dev.upCurrent = 0;
-            }
-            // 测量模式下的电流计算
-            if (dev.activePanel === 'MEASURE') {
-                // SRC_MA 模式：测量 src_ma 和 src_com 之间的电流（250Ω 内阻）
-                if (cSMa !== undefined && cSCom !== undefined) {
-                    if (dev.measureMode === 'SRC_MA') {
-                        const vSMa = this.getVoltageAtPort(`${p}src_ma`);
-                        const vSCom = this.getVoltageAtPort(`${p}src_com`);
-                        const iMeas = (vSMa - vSCom) / 250;
-                        dev.maCurrent = iMeas;
-                    } else if (dev.measureMode === 'SRC_LOOP') {
-                        // SRC_LOOP 模式：从 src_ma 注入 24V 电压源，通过 src_com 到 GND 的 250Ω 电阻                
-                        const vSCom = this.getVoltageAtPort(`${p}src_com`);
-                        const iMeas = vSCom / 250;  // 通过采样电阻的电流
-                        dev.maCurrent = iMeas;
-                    }
-                } else {
-                    dev.maCurrent = 0;
-                }
-                if (cSV !== undefined && cSCom !== undefined) {
-                    if (dev.measureMode === 'SRC_RES' || dev.measureMode === 'SRC_RTD') {
-                        // LOOP 模式：测量 meas_ma 和 meas_com 之间的电流（250Ω 内阻）
-                        const vSV = this.getVoltageAtPort(`${p}src_v`);
-                        const vSCom = this.getVoltageAtPort(`${p}src_com`);
-                        const rMeas = this._getEquivalentResistance(
-                            this.clusters[cSV], this.clusters[cSCom], this.clusters
-                        );
-                        const iMeas = (vSV - vSCom) / rMeas;
-                        dev.vCurrent = iMeas;
-                    } else {
-                        dev.vCurrent = 0;
-                    }
-                } else {
-                    dev.vCurrent = 0;
-                }
-            } else if (dev.activePanel === 'SOURCE') {
-                if (cSMa !== undefined && cSCom !== undefined) {
-                    switch (dev.sourceMode) {
-                        case 'SRC_MA':
-                            // 电流源模式：直接输出设定电流
-                            dev.maCurrent = dev.sourceValue / 1000;  // 转换为 A
-                            break;
-                        case 'SRC_LOOP':
-                            dev.maCurrent = dev.sourceValue / 1000;
-                            break;
-                        default:
-                            dev.maCurrent = 0;
-                            break;
-                    }
-                } else {
-                    dev.vCurrent = 0;
-                }
-                if (cSV !== undefined && cSCom !== undefined) {
-                    switch (dev.sourceMode) {
-                        case 'SRC_V':
-                            // 电压源模式：根据实际负载计算电流
-                            if (cSV !== undefined && cSCom !== undefined) {
-                                const vSrc = this.getVoltageAtPort(`${p}src_v`);
-                                const vCom = this.getVoltageAtPort(`${p}src_com`);
-                                const rLoad = this._getEquivalentResistance(
-                                    this.clusters[cSV], this.clusters[cSCom], this.clusters
-                                );
-                                if (rLoad !== undefined && rLoad > 0.1) {
-                                    dev.vCurrent = (vSrc - vCom) / rLoad;
-                                } else {
-                                    dev.vVCurrent = 0;
-                                }
-                            }
-                            break;
-                        case 'SRC_RES':
-                            // 电阻模式：根据施加的电压和电阻值计算电流
-                            if (cSV !== undefined && cSCom !== undefined) {
-                                const vSrc = this.getVoltageAtPort(`${p}src_v`);
-                                const vCom = this.getVoltageAtPort(`${p}src_com`);
-                                const res = Math.max(0.1, dev.sourceValue);
-                                dev.vCurrent = (vSrc - vCom) / res;
-                            }
-                            break;
-                        default:
-                            // 频率模拟：通常注入的是脉冲信号，计算平均电流
-                            dev.vCurrent = 0;
-                            break;
-                    }
-                } else {
-                    dev.vCurrent = 0;
-                }
+            if (dev.isPowered) this._updateCalibratorCurrents(dev, getV, results);
+        })
+    }
+    /**
+     * PID 模块通道详细更新逻辑
+     * @param {Object} dev PID模块实例
+     * @param {Function} getV 电压获取辅助函数
+     * @param {Float64Array} results MNA求解结果
+     */
+    _updatePIDChannels(dev, getV, results) {
+        // --- CH1 & CH2: 输出通道（4-20mA 或 PWM）---
+        ['ch1', 'ch2'].forEach((ch, idx) => {
+            const poPort = `po${idx + 1}`;
+            const noPort = `no${idx + 1}`;
+            const vP = getV(dev.id, poPort);
+            const vN = getV(dev.id, noPort);
 
+            if (vP !== undefined && vN !== undefined) {
+                const outMode = dev.outModes[`CH${idx + 1}`] || '4-20mA';
+                if (outMode === '4-20mA') {
+                    // 4-20mA 模式：通过负载电阻计算电流
+                    const rLoad = this._getEquivalentResistanceFromPorts(dev.id, poPort, noPort);
+                    dev[`${ch}Current`] = (vP - vN) / Math.max(0.1, rLoad);
+                } else if (outMode === 'PWM') {
+                    // PWM 模式：直接使用设备设定值
+                    dev[`${ch}Current`] = results[`pid.${ch}VSourceIdx`] || 0;
+                }
+            } else {
+                dev[`${ch}Current`] = 0;
             }
         });
 
+        // --- PI1 & NI1: 4-20mA 输入供电端 ---
+        const vNi1 = getV(dev.id, 'ni1');
+        if (vPi1 !== undefined && vNi1 !== undefined) {
+            // 输入回路电流 I = V / 250Ω (标准 4-20mA 回路电阻)
+            dev.pi1Current = vNi1 / 250;
+        } else {
+            dev.pi1Current = 0;
+        }
+
+        // --- VCC & GND: 电源供电端 ---
+        const vVcc = getV(dev.id, 'vcc');
+        const vGnd = getV(dev.id, 'gnd');
+        if (vVcc !== undefined && vGnd !== undefined) {
+            // 电源消耗电流 I = V / 50Ω (内部电路阻抗)
+            dev.vccCurrent = (vVcc - vGnd) / 50;
+        } else {
+            dev.vccCurrent = 0;
+        }
     }
 
+    /**
+     * AI 模块通道详细更新
+     */
+    _updateAIChannels(dev, getV) {
+        // 4-20mA 通道 (CH1, CH2)
+        [1, 2].forEach(i => {
+            const vn = getV(dev.id, `ch${i}n`);
+            if (vn !== undefined) {
+                dev[`ch${i}Current`] = vn / 250;
+                dev.setRaw(`ch${i}`, dev[`ch${i}Current`] * 1000);
+            } else {
+                dev.setRaw(`ch${i}`, 0);
+            }
+        });
+
+        // RTD 通道 (CH3)
+        const v3p = getV(dev.id, 'ch3p'), v3n = getV(dev.id, 'ch3n');
+        if (v3p !== undefined && v3n !== undefined) {
+            const req = this._getEquivalentResistanceFromPorts(dev.id, 'ch3p', 'ch3n');
+            dev.ch3Current = (v3p - v3n) / req;
+            dev.setRaw('ch3', req);
+        }
+
+        // TC 通道 (CH4)
+        const v4p = getV(dev.id, 'ch4p'), v4n = getV(dev.id, 'ch4n');
+        if (v4p !== undefined && v4n !== undefined) {
+            const req = this._getEquivalentResistanceFromPorts(dev.id, 'ch4p', 'ch4n');
+            dev.setRaw('ch4', req > 50 ? -100 : (v4p - v4n) * 1000);
+        }
+    }
+    /**
+     * AO 模块通道详细更新逻辑
+     * @param {Object} dev 模块实例
+     * @param {Function} getV 电压获取辅助函数
+     */
+    _updateAOChannels(dev, getV) {
+        // --- CH1 & CH2: 4-20mA 电流输出通道 ---
+        // 对于 AO 模块，实际电流通常由内部设定值 (actual) 决定
+        // 但在仿真中，我们需要确保外部电路是闭合的
+        [1, 2].forEach(i => {
+            const pPort = `ch${i}p`;
+            const nPort = `ch${i}n`;
+            const vP = getV(dev.id, pPort);
+            const vN = getV(dev.id, nPort);
+
+            if (vP !== undefined && vN !== undefined) {
+                // 如果回路闭合，电流等于通道的设定输出值
+                dev[`ch${i}Current`] = dev.channels[`ch${i}`].actual;
+            } else {
+                // 如果回路断开，实际电流为 0
+                dev[`ch${i}Current`] = 0;
+            }
+        });
+
+        // --- CH3 & CH4: PWM 或 电压输出通道 ---
+        // 这类通道通常需要根据负载电阻来计算消耗的电流
+        [3, 4].forEach(i => {
+            const vP = getV(dev.id, `ch${i}p`);
+            const vN = getV(dev.id, `ch${i}n`);
+
+            if (vP !== undefined && vN !== undefined) {
+                // 获取外部负载的等效电阻
+                const rLoad = this._getEquivalentResistanceFromPorts(dev.id, `ch${i}p`, `ch${i}n`);
+                // I = ΔV / R_load
+                dev[`ch${i}Current`] = (vP - vN) / Math.max(0.1, rLoad);
+            } else {
+                dev[`ch${i}Current`] = 0;
+            }
+        });
+    }
+
+    /**
+     * DO 模块通道详细更新逻辑
+     * @param {Object} dev 模块实例
+     * @param {Function} getV 电压获取辅助函数
+     */
+    _updateDOChannels(dev, getV) {
+        // --- CH1 & CH2: 普通开关量输出 ---
+        [1, 2].forEach(i => {
+            const vP = getV(dev.id, `ch${i}p`);
+            const vN = getV(dev.id, `ch${i}n`);
+
+            if (vP !== undefined && vN !== undefined) {
+                // dev.ch1R / dev.ch2R 动态反映了开关状态：
+                // 闭合时为极小值（如 0.1Ω），断开时为极大值（如 10MΩ）
+                const R = dev[`ch${i}R`] || 1000000;
+                dev[`ch${i}Current`] = (vP - vN) / R;
+            } else {
+                dev[`ch${i}Current`] = 0;
+            }
+        });
+
+        // --- CH3 & CH4: PWM 功率输出通道 ---
+        [3, 4].forEach(i => {
+            const vP = getV(dev.id, `ch${i}p`);
+            const vN = getV(dev.id, `ch${i}n`);
+
+            if (vP !== undefined && vN !== undefined) {
+                // PWM 通道的电流计算依赖于负载
+                const rLoad = this._getEquivalentResistanceFromPorts(dev.id, `ch${i}p`, `ch${i}n`);
+                dev[`ch${i}Current`] = (vP - vN) / Math.max(0.1, rLoad);
+            } else {
+                dev[`ch${i}Current`] = 0;
+            }
+        });
+    }
+    /**
+     * 过程校验仪详细更新逻辑
+     */
+    _updateCalibratorCurrents(dev, getV, results) {
+        const p = dev.id;
+        // 上部测量面板
+        if (dev.upMode === 'MEAS_LOOP') {
+            dev.upCurrent = (getV(p, 'meas_com') || 0) / 250;
+        } else if (dev.upMode === 'MEAS_MA') {
+            dev.upCurrent = ((getV(p, 'meas_ma') || 0) - (getV(p, 'meas_com') || 0)) / 250;
+        } else {
+            dev.upCurrent = 0;
+        }
+
+        // 下部活动面板
+        if (dev.activePanel === 'MEASURE') {
+            if (dev.measureMode.startsWith('MEAS_MA')) {
+                dev.maCurrent = ((getV(p, 'src_ma') || 0) - (getV(p, 'src_com') || 0)) / 250;
+                dev.vCurrent = 0;
+            } else if (dev.measureMode === 'MEAS_LOOP') {
+                dev.maCurrent = (getV(p, 'src_com') || 0) / 250;
+                dev.vCurrent = 0;
+            } else if (dev.measureMode === 'MEAS_RTD' || dev.measureMode === 'MEAS_R') {
+                const r = this._getEquivalentResistanceFromPorts(p, 'src_v', 'src_com');
+                dev.vCurrent = ((getV(p, 'src_v') || 0) - (getV(p, 'src_com') || 0)) / r;
+                dev.maCurrent = 0;
+            } else {
+                dev.maCurrent = 0;
+                dev.vCurrent = 0;
+            }
+        } else {
+            if (dev.sourceMode === 'SRC_LOOP') {
+                const vP = getV(dev.id, `src_ma`) ?? 0;
+                const vN = getV(dev.id, `src_com`) ?? 0;
+                dev._lastVDiff = vP - vN;  //这是变送器类型的状态回填，必须、重要！！！
+                dev.maCurrent = dev._lastG * dev._lastVDiff;
+                dev.vCurrent = 0;
+            } else if (dev.sourceMode === 'SRC_MA') {
+                dev.maCurrent = dev.sourceValue / 1000;
+                dev.vCurrent = 0;
+            } else if (dev.sourceMode === 'SRC_R' || dev.sourceMode === 'SRC_RTD') {
+                dev.maCurrent = 0
+                const vP = getV(dev.id, `src_v`) ?? 0;
+                const vN = getV(dev.id, `src_com`) ?? 0;
+                let R = dev.sourceValue;
+                if (dev.sourceMode === 'SRC_RTD') R = dev._tempToRTDOhm(dev.sourceValue);
+                dev.vCurrent = (vP - vN) / R;
+            } else if (dev.sourceMode === 'SRC_V') {
+                dev.maCurrent = 0;
+                dev.vCurrent = results[dev.currentIdx];
+            } else if (dev.sourceMode === 'SRC_HZ') {
+                dev.maCurrent = 0
+                const vP = getV(dev.id, `src_v`) ?? 0;
+                const vN = getV(dev.id, `src_com`) ?? 0;
+                const voltage = dev.getSourceValue(this.currentTime);
+                dev.vCurrent = (voltage - (vP - vN)) / (dev.rOn || 0.1);
+            }
+
+        }
+    }
+
+    /**
+     * 辅助：通过端口名获取等效电阻
+     */
+    _getEquivalentResistanceFromPorts(devId, p1, p2) {
+        const c1 = this.portToCluster.get(`${devId}_wire_${p1}`);
+        const c2 = this.portToCluster.get(`${devId}_wire_${p2}`);
+        if (c1 === undefined || c2 === undefined) return 1000000;
+        return this._getEquivalentResistance(this.clusters[c1], this.clusters[c2], this.clusters);
+    }
     // ═══════════════════════════════════════════════════════════════════════
     // 公开辅助方法（供 InstrumentUpdater / DeviceStamps 回调使用）
     // ═══════════════════════════════════════════════════════════════════════
@@ -849,6 +873,8 @@ export class CircuitSolver {
             const i = dev.physCurrent || 0;
             if (extPort.endsWith('_l')) return -i;
             if (extPort.endsWith('_r')) return i;
+            if (extPort.endsWith('_NO')) return -dev.contactCurrent;
+            if (extPort.endsWith('_COM')) return dev.contactCurrent;            
             return 0;
         }
         // ─ 2. 压力传感器电流（对应 stampPressureSensors）
@@ -862,7 +888,7 @@ export class CircuitSolver {
 
         // ─ 3. 变送器缓存压差（对应 stampTransmitters）
         if (dev.type === 'transmitter_2wire') {
-            const i = (dev._lastVDiff > 10) ? (dev._lastVDiff * (dev._lastG || 0)) : 0;
+            const i = dev.physCurrent || 0;
             if (extPort.endsWith('_n')) return i;
             if (extPort.endsWith('_p')) return -i;
             return 0;
@@ -884,46 +910,18 @@ export class CircuitSolver {
         }
         // ─ 6. PID 电流（对应 stampPIDs）
         if (dev.type === 'PID') {
-            if (extPort.endsWith('_po1') || extPort.endsWith('_no1')) {
-                if (dev.outModes.CH1 === '4-20mA') {
-                    const cPo1 = this.portToCluster.get(`${dev.id}_wire_po1`);
-                    const cNo1 = this.portToCluster.get(`${dev.id}_wire_no1`);
-                    const vDiff = (this.nodeVoltages.get(cPo1) || 0) - (this.nodeVoltages.get(cNo1) || 0);
-                    const req = (cPo1 !== undefined && cNo1 !== undefined)
-                        ? this._getEquivalentResistance(this.clusters[cPo1], this.clusters[cNo1], this.clusters) : Infinity;
-                    if (cPo1 === undefined || cNo1 === undefined || req > 100000) return 0;
-                    const i = (vDiff > 23.49) ? vDiff / req : dev.output1mA / 1000;
-                    return extPort.endsWith('_po1') ? i : -i;
-                } else if (dev.outModes.CH1 === 'PWM') {
-                    const i = dev.ch1Current || 0;
-                    return extPort.endsWith('_po1') ? -i : i;
-                }
-            }
-            if (extPort.endsWith('_po2') || extPort.endsWith('_no2')) {
-                if (dev.outModes.CH2 === '4-20mA') {
-                    const cPo2 = this.portToCluster.get(`${dev.id}_wire_po2`);
-                    const cNo2 = this.portToCluster.get(`${dev.id}_wire_no2`);
-                    const vDiff = (this.nodeVoltages.get(cPo2) || 0) - (this.nodeVoltages.get(cNo2) || 0);
-                    const req = (cPo2 !== undefined && cNo2 !== undefined)
-                        ? this._getEquivalentResistance(this.clusters[cPo2], this.clusters[cNo2], this.clusters) : Infinity;
-                    if (cPo2 === undefined || cNo2 === undefined || req > 100000) return 0;
-                    const i = (vDiff > 23.49) ? vDiff / req : dev.output2mA / 1000;
-                    return extPort.endsWith('_po2') ? i : -i;
-                } else if (dev.outModes.CH2 === 'PWM') {
-                    const i = dev.ch2Current || 0;
-                    return extPort.endsWith('_po2') ? -i : i;
-                }
-            }
-            if (extPort.endsWith('_pi1') || extPort.endsWith('_ni1')) {
-                const vNi = this.getVoltageAtPort(`${dev.id}_wire_ni1`);
-                const iLoop = vNi / 250;
-                return extPort.endsWith('_pi1') ? iLoop : -iLoop;
-            }
-            if (extPort.endsWith('_vcc') || extPort.endsWith('_gnd')) {
-                const vcc = this.getVoltageAtPort(`${dev.id}_wire_vcc`);
-                const iLoop = vcc / 50;
-                return extPort.endsWith('_vcc') ? -iLoop : iLoop;
-            }
+            // CH1 输出通道
+            if (extPort.endsWith('_po1')) return dev.ch1Current || 0;
+            if (extPort.endsWith('_no1')) return -(dev.ch1Current || 0);
+            // CH2 输出通道
+            if (extPort.endsWith('_po2')) return dev.ch2Current || 0;
+            if (extPort.endsWith('_no2')) return -(dev.ch2Current || 0);
+            // PI1 输入供电端
+            if (extPort.endsWith('_pi1')) return dev.pi1Current || 0;
+            if (extPort.endsWith('_ni1')) return -(dev.pi1Current || 0);
+            // VCC 电源端
+            if (extPort.endsWith('_vcc')) return -(dev.vccCurrent || 0);
+            if (extPort.endsWith('_gnd')) return dev.vccCurrent || 0;
             return 0;
         }
         // ─ 7. 热电偶电流（
@@ -935,7 +933,7 @@ export class CircuitSolver {
         // ─ 8. 运放电流（对应 stampOpAmps）
         if (dev.type === 'amplifier') {
             if (extPort.endsWith('_p') || extPort.endsWith('_n')) return 0;
-            if (extPort.endsWith('_OUT')) return -dev.outCurrent || 0;
+            if (extPort.endsWith('_OUT')) return -dev.physCurrent || 0;
         }
         // ─ 9. 二极管电流（对应 stampDiodes）
         if (dev.type === 'diode') {
@@ -971,12 +969,6 @@ export class CircuitSolver {
             const i = dev.physCurrent || 0;
             if (extPort.endsWith('_outp')) return -i;
             if (extPort.endsWith('_outn')) return i;
-            if (extPort.endsWith('_p') || extPort.endsWith('_n')) {
-                const cP = this.portToCluster.get(`${dev.id}_wire_p`);
-                const cN = this.portToCluster.get(`${dev.id}_wire_n`);
-                const iIn = ((this.nodeVoltages.get(cP) || 0) - (this.nodeVoltages.get(cN) || 0)) * 1e-9;
-                return extPort.endsWith('_p') ? -iIn : iIn;
-            }
             return 0;
         }
         // ─ 15. 信号发生器电流（对应 stampSignalGenerators）
@@ -987,14 +979,16 @@ export class CircuitSolver {
             if (extPort.endsWith('_ch2n')) return -(dev.ch2Current || 0);
             return 0;
         }
-        // ─ 17. AI模块（对应 stampAI）
-        if (dev.type === 'AI') {
+        // ─ 17. AI模块//19 AO模块 //20 DI模块 //21 DO模块（对应 stampAI,stampAO，stampDI）
+        if (dev.type === 'AI' || dev.type === 'AO' || dev.type === 'DI' || dev.type === 'DO') {
             if (extPort.endsWith('_ch1p')) return dev.ch1Current || 0;
             if (extPort.endsWith('_ch1n')) return -(dev.ch1Current || 0);
             if (extPort.endsWith('_ch2p')) return dev.ch2Current || 0;
             if (extPort.endsWith('_ch2n')) return -(dev.ch2Current || 0);
             if (extPort.endsWith('_ch3p')) return dev.ch3Current || 0;
             if (extPort.endsWith('_ch3n')) return -(dev.ch3Current || 0);
+            if (extPort.endsWith('_ch4p')) return dev.ch4Current || 0;
+            if (extPort.endsWith('_ch4n')) return -(dev.ch4Current || 0);
             if (extPort.endsWith('_vcc')) return -dev.physCurrent || 0;
             if (extPort.endsWith('_gnd')) return (dev.physCurrent || 0);
             return 0;
@@ -1006,7 +1000,7 @@ export class CircuitSolver {
                 const iMeas = dev.upCurrent || 0;
                 if (extPort.endsWith('_meas_ma')) return iMeas;
                 if (extPort.endsWith('_meas_com')) return -iMeas;
-            } 
+            }
             // 下面板
             if (dev.activePanel === 'MEASURE') {
                 // SRC_MA 模式：测量 src_ma 和 src_com 之间的电流
@@ -1058,7 +1052,8 @@ export class CircuitSolver {
             if (!dev || dev.id === meterId) continue;
 
             const isFunctional =
-                (dev.type === 'resistor' && dev.currentResistance > 0.1) ||
+                (
+                    dev.type === 'resistor' && dev.currentResistance > 0.1) ||
                 dev.type === 'source' || dev.type === 'ac_source' || dev.type === 'source_3p' ||
                 dev.type === 'gnd' || dev.type === 'transmitter_2wire' || dev.type === 'PID' ||
                 dev.type === 'diode' || dev.type === 'bjt' || dev.type === 'njfet' ||
@@ -1066,7 +1061,9 @@ export class CircuitSolver {
                 dev.type === 'pressure_transducer' || dev.type === 'pressure_sensor' ||
                 dev.type === 'oscilloscope' || dev.type === 'oscilloscope_tri' ||
                 dev.type === 'capacitor' || dev.type === 'inductor' ||
-                dev.type === 'AI' || dev.type === 'calibrator';
+                dev.type === 'AI' || dev.type === 'calibrator' || dev.type === 'AO' || (
+                    dev.type === 'relay' && dev.special === 'voltage') ||
+                dev.type === 'DI' || dev.type === 'DO';
 
             if (isFunctional) { found.push({ device: dev, extPort: curr }); continue; }
 

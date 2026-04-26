@@ -47,7 +47,7 @@ import {
     canHandleAOReply, canHandleDIReport, canHandleDIReply, canHandleDOStatus,
     canHandleDOReply, canSendAOCommand, canSendDOCommand, canSendNMT,
     startAllNodes, stopAllNodes, resetAllNodes, sendNMTCommand,
-    requestNodeConfig, initAIParams
+    requestNodeConfig, initAIParams, initAOParams, initDIParams, initDOParams
 } from './cc/canBusHandler.js';
 
 import { simLevel, simTemp } from './cc/simulation.js';
@@ -72,7 +72,7 @@ export class CentralComputer extends BaseComponent {
         this.busConnected = false;
 
         // 当前激活的页面索引
-        this.activePage = 1;
+        this.activePage = 7;
 
         // ── 系统数据快照 ──────────────────────────
         this.data = {
@@ -83,22 +83,22 @@ export class CentralComputer extends BaseComponent {
                 ch4: { value: 0, fault: false, faultText: 'normal', alarm: 'normal', unit: '°C' },
             },
             ao: {
-                ch1: { type: '4-20mA', percent: 0, actual: 4.0, fault: false, hold: false },
-                ch2: { type: '4-20mA', percent: 0, actual: 4.0, fault: false, hold: false },
-                ch3: { type: 'PWM', percent: 0, actual: 0, fault: false, hold: false },
-                ch4: { type: 'PWM', percent: 0, actual: 0, fault: false, hold: false },
+                ch1: { type: '4-20mA', percent: 0, actual: 4.0, fault: false, hold: false, mode: 'disable', lrv: 0, urv: 100 },
+                ch2: { type: '4-20mA', percent: 0, actual: 4.0, fault: false, hold: false, mode: 'disable', lrv: 0, urv: 100 },
+                ch3: { type: 'PWM', percent: 0, actual: 0, fault: false, hold: false, mode: 'disable', lrv: 0, urv: 100 },
+                ch4: { type: 'PWM', percent: 0, actual: 0, fault: false, hold: false, mode: 'disable', lrv: 0, urv: 100 },
             },
             di: {
-                ch1: { state: false, fault: false, counter: 0 },
-                ch2: { state: false, fault: false, counter: 0 },
-                ch3: { state: false, fault: false, counter: 0 },
-                ch4: { state: false, fault: false, counter: 0 },
+                ch1: { state: false, fault: false, alarm: false, counter: 0, trigger: 'NONE' },
+                ch2: { state: false, fault: false, alarm: false, counter: 0, trigger: 'NONE' },
+                ch3: { state: false, fault: false, alarm: false, counter: 0, trigger: 'NONE' },
+                ch4: { state: false, fault: false, alarm: false, counter: 0, trigger: 'NONE' },
             },
             do: {
-                ch1: { state: false, fault: false, hold: false },
-                ch2: { state: false, fault: false, hold: false },
-                ch3: { state: false, fault: false, hold: false },
-                ch4: { state: false, fault: false, hold: false },
+                ch1: { state: false, fault: false, hold: false, mode: 'hand', pulse: { onMs: 500, offMs: 500, phaseMs: 0 }, safeMode: 'off', presetState: false },
+                ch2: { state: false, fault: false, hold: false, mode: 'hand', pulse: { onMs: 500, offMs: 500, phaseMs: 0 }, safeMode: 'off', presetState: false },
+                ch3: { state: false, fault: false, hold: false, mode: 'hand', pulse: { onMs: 500, offMs: 500, phaseMs: 0 }, safeMode: 'off', presetState: false },
+                ch4: { state: false, fault: false, hold: false, mode: 'hand', pulse: { onMs: 500, offMs: 500, phaseMs: 0 }, safeMode: 'off', presetState: false },
             },
         };
 
@@ -119,7 +119,7 @@ export class CentralComputer extends BaseComponent {
         // ── 液位双位控制 ──────────────────────────
         this.levelCtrl = {
             level: 45, setHH: 80, setH: 70, setL: 30, setLL: 20,
-            inletOn: false, drainOn: false, simMode: true,
+            inletOn: false, simMode: true,drainOn:true,switchOn:false,
         };
         this._levelTrendHistory = [];
 
@@ -138,9 +138,9 @@ export class CentralComputer extends BaseComponent {
         this.nmtNodeStates = { ai: 'init', ao: 'init', di: 'init', do: 'init' };
         this.nodeConfigs = {
             ai: { channels: {}, ranges: {}, alarms: {}, lastupdated: 0, available: false, pending: false },
-            ao: { channels: {}, lastupdated: 0 },
-            di: { channels: {}, lastupdated: 0 },
-            do: { channels: {}, lastupdated: 0 },
+            ao: { channels: {}, lastupdated: 0, available: false, pending: false },
+            di: { channels: {}, lastupdated: 0, available: false, pending: false },
+            do: { channels: {}, lastupdated: 0, available: false, pending: false },
         };
 
         // ── 心跳 ──────────────────────────────────
@@ -276,8 +276,8 @@ export class CentralComputer extends BaseComponent {
     //  数据拉取（每 tick）
     // ══════════════════════════════════════════
     _pullModuleData() {
-         this._canSendAOCommand();
-        //  this._canSendDOCommand();        
+        this._canSendAOCommand();
+        this._canSendDOCommand();        
         const now = Date.now();
         const TIMEOUT = 2000;
 
@@ -301,8 +301,10 @@ export class CentralComputer extends BaseComponent {
                 offlineNodes.push(meta.label);
                 meta.keys.forEach(id => {
                     const ch = this.data[meta.dataKey][id];
-                    if (ch) { ch.fault = true;
-                         ch.hold = true; }
+                    if (ch) {
+                        ch.fault = true;
+                        ch.hold = true;
+                    }
                 });
             } else if (!neverSeen) {
                 onlineNodes.push(meta.label);
@@ -345,6 +347,42 @@ export class CentralComputer extends BaseComponent {
             }
         } catch (_) { }
 
+        // AO 参数 pending → 上线后触发初始化读取
+        try {
+            const bus = this.sys?.canBus;
+            const aoOnline = bus ? bus.isNodeOnline('ao') : false;
+            if (aoOnline && this.nodeConfigs.ao?.pending && this.busConnected && !this.commFault) {
+                this.nodeConfigs.ao.pending = false;
+                this.nodeConfigs.ao.available = true;
+                console.log('[CC] AO 上线，触发参数初始化读取');
+                this._initAOParams();
+            }
+        } catch (_) { }
+
+        // DI 参数 pending → 上线后触发初始化读取
+        try {
+            const bus = this.sys?.canBus;
+            const diOnline = bus ? bus.isNodeOnline('di') : false;
+            if (diOnline && this.nodeConfigs.di?.pending && this.busConnected && !this.commFault) {
+                this.nodeConfigs.di.pending = false;
+                this.nodeConfigs.di.available = true;
+                console.log('[CC] DI 上线，触发参数初始化读取');
+                this._initDIParams();
+            }
+        } catch (_) { }
+
+        // DO 参数 pending → 上线后触发初始化读取
+        try {
+            const bus = this.sys?.canBus;
+            const doOnline = bus ? bus.isNodeOnline('do') : false;
+            if (doOnline && this.nodeConfigs.do?.pending && this.busConnected && !this.commFault) {
+                this.nodeConfigs.do.pending = false;
+                this.nodeConfigs.do.available = true;
+                console.log('[CC] DO 上线，触发参数初始化读取');
+                this._initDOParams();
+            }
+        } catch (_) { }
+
         // 同步网络诊断页节点指示灯
         if (this._netRowDisps) {
             Object.entries(nodeMap).forEach(([addrStr]) => {
@@ -375,6 +413,9 @@ export class CentralComputer extends BaseComponent {
 
     _requestNodeConfig(nodeType, configCmd, param = 0) { requestNodeConfig(this, nodeType, configCmd, param); }
     _initAIParams() { initAIParams(this); }
+    _initAOParams() { initAOParams(this); }
+    _initDIParams() { initDIParams(this); }
+    _initDOParams() { initDOParams(this); }
 
     // ══════════════════════════════════════════
     //  委托给 shellAndTabs.js 的方法
@@ -426,13 +467,70 @@ export class CentralComputer extends BaseComponent {
     _updateAIChannelDisplay() { }
 
     /**
+     * DO 行参数更新（DO 设置页辅助）
+     * 将最新收到的 DO 模块参数同步到界面对应行
+     */
+    _updateDORowFromModule(chId) {
+        if (!this._doRows?.[chId]) return;
+        const row = this._doRows[chId];
+        const doMod = this.sys?.comps?.['do'];
+        const d = this.data?.do?.[chId] ?? {};
+
+        const MODE_LABELS = { hand: '手  动', auto: '自  动', pulse: '脉冲模式', disable: '禁  用' };
+        const MODE_COLORS_MAP = { hand: '#ffcc00', auto: '#44ff88', pulse: '#00aaff', disable: '#888' };
+        const SAFE_COLORS_MAP = { off: '#888', hold: '#ffcc00', preset: '#ff8833' };
+
+        const mode = d.mode || doMod?.channels?.[chId]?.mode || 'hand';
+        const mc = MODE_COLORS_MAP[mode] || '#888';
+        if (row.modeBtn) {
+            row.modeBtn.findOne('Rect').fill(mc + '33');
+            row.modeBtn.findOne('Rect').stroke(mc);
+            row.modeBtn.findOne('Text').text(MODE_LABELS[mode] || mode);
+            row.modeBtn.findOne('Text').fill(mc);
+        }
+        row.forceBtn?.opacity(mode === 'hand'  ? 1 : 0.35);
+        row.pulseBtn?.opacity(mode === 'pulse' ? 1 : 0.35);
+
+        // 脉冲参数文本
+        if (row.pulseBtn && mode === 'pulse') {
+            const pc = doMod?.pulseConfig?.[chId] || d.pulse || {};
+            const onMs  = pc.onMs  ?? 500;
+            const offMs = pc.offMs ?? 500;
+            const phMs  = pc.phaseStart ??0;
+            row.pulseBtn.findOne('Text').text(`${onMs}  ${offMs}  ${phMs}`);
+        }
+
+        // 安全输出
+        const safeMode = d.safeMode || doMod?.safeOutput?.[chId]?.mode || 'off';
+        const sc = SAFE_COLORS_MAP[safeMode] || '#888';
+        if (row.safeBtn) {
+            row.safeBtn.findOne('Rect').fill(sc + '33');
+            row.safeBtn.findOne('Rect').stroke(sc);
+            row.safeBtn.findOne('Text').text(`Safe: ${safeMode}`);
+            row.safeBtn.findOne('Text').fill(sc);
+        }
+
+        // presetBtn 可见性与文本
+        if (row.presetBtn) {
+            row.presetBtn.visible(safeMode === 'preset');
+            const ps = d.presetState ?? doMod?.safeOutput?.[chId]?.presetState ?? false;
+            row.presetBtn.findOne('Text').text(ps ? '预设:  ON' : '预设: OFF');
+            row.presetBtn.findOne('Rect').fill(ps ? '#ff883333' : '#88888822');
+            row.presetBtn.findOne('Rect').stroke(ps ? '#ff8833' : '#888');
+            row.presetBtn.findOne('Text').fill(ps ? '#ff8833' : '#888');
+        }
+
+        this._refreshCache();
+    }
+
+    /**
      * 网络诊断日志追加（供 canBusHandler 或 UI 按钮调用）
      * @param {string} line 单行文本
      */
     _appendNetDiagLog(line) {
         try {
             if (!this._netDiagLog) this._netDiagLog = [];
-            const ts = new Date().toTimeString().slice(0,8);
+            const ts = new Date().toTimeString().slice(0, 8);
             this._netDiagLog.push(`${ts} ${line}`);
             if (this._netDiagLog.length > 10) this._netDiagLog.shift();
             if (this._netDiagText) this._netDiagText.text(this._netDiagLog.join('\n'));

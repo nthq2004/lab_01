@@ -11,15 +11,12 @@ export function simLevel(cc) {
     const lc = cc.levelCtrl;
     if (!lc.simMode) return;
 
-    if (lc.inletOn) lc.level = Math.min(100, lc.level + 0.3);
-    if (lc.drainOn) lc.level = Math.max(0,   lc.level - 0.5);
-    lc.level = Math.max(0, lc.level - 0.04); // 自然消耗
+    if (lc.inletOn) lc.level = Math.min(100, lc.level + 0.5);
+    if (lc.drainOn) lc.level = Math.max(0,   lc.level - 0.8);
 
     // 双位控制逻辑
     if (lc.level <= lc.setL) lc.inletOn = true;
     if (lc.level >= lc.setH) lc.inletOn = false;
-    if (lc.level <= lc.setL) lc.drainOn = false;
-    if (lc.level >= lc.setH) lc.drainOn = true;
 
     cc._levelTrendHistory.push(lc.level);
     if (cc._levelTrendHistory.length > 350) cc._levelTrendHistory.shift();

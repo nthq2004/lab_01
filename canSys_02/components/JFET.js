@@ -29,6 +29,7 @@ export class JFET extends BaseComponent {
         this.rOn  = config.rOn  ?? 10;
         /** 截止电阻 (Ω) */
         this.rOff = config.rOff ?? 10e6;
+        this.currentResistance = 10;
 
         this.initPorts();
         this.initVisuals();

@@ -184,7 +184,7 @@ export class InstrumentUpdater {
                 }
             });
         }
-        return R === Infinity ? 10000000 : R;
+        return R === Infinity ? 1e9 : R;
     }
 
     _measureDiode(dev) {
@@ -228,7 +228,7 @@ export class InstrumentUpdater {
         if (!triodeMatch && Math.abs(s.getPD(vNode, comNode)) < 0.1) {
             R = s._getEquivalentResistance(vCluster, comCluster, s.clusters);
         }
-        return R === Infinity ? 10000000 : R;
+        return R === Infinity ? 1e9 : R;
     }
 
     _measureCapacitance(dev) {
@@ -274,10 +274,14 @@ export class InstrumentUpdater {
         const s = this.solver;
         const cP = s.portToCluster.get(`${dev.id}_wire_p`);
         const cN = s.portToCluster.get(`${dev.id}_wire_n`);
+        // dev.update({
+        //     powered: dev._lastVDiff > 10 && cP !== undefined && cN !== undefined,
+        //     transCurrent: s._calcTransmitterCurrent(dev) * 1000
+        // });
         dev.update({
             powered: dev._lastVDiff > 10 && cP !== undefined && cN !== undefined,
-            transCurrent: s._calcTransmitterCurrent(dev) * 1000
-        });
+            transCurrent: dev.physCurrent*1000
+        });        
     }
 
     // ─── PID 输入电流显示 ─────────────────────────────────────────────────
@@ -402,7 +406,7 @@ export class InstrumentUpdater {
             } else if (dev.upMode === 'MEAS_LOOP' && cMa !== undefined) {
                 const vCom = s.nodeVoltages.get(cCom) || 0;
                 upValue = vCom * 4;
-            } else if (dev.upMode === 'MEAS_V' && cCom !== undefined) {
+            } else if (dev.upMode === 'MEAS_V' && cMa !== undefined) {
                 upValue = (s.nodeVoltages.get(cMa) || 0) - (s.nodeVoltages.get(cCom) || 0);
             }
         }

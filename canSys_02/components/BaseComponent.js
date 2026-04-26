@@ -435,8 +435,20 @@ export class BaseComponent {
         try {
             if (this.group && typeof this.group.clearCache === 'function') {
                 this.group.clearCache();
-                // 注意：cache 之后通常需要 draw 一次层
-                if (typeof this.group.cache === 'function') this.group.cache();
+                // 只有在 group 有有效尺寸时才 cache，避免 Konva 因宽高为 0 抛警告
+                if (typeof this.group.getClientRect === 'function' && typeof this.group.cache === 'function') {
+                    try {
+                        const r = this.group.getClientRect({ relativeTo: this.group });
+                        if (r && r.width > 0 && r.height > 0) {
+                            this.group.cache();
+                        } else {
+                            // 跳过 cache
+                        }
+                    } catch (e) {
+                        // 保守兼容：如果 getClientRect 出错，则尝试 cache（原行为）
+                        try { this.group.cache(); } catch (err) { /* ignore */ }
+                    }
+                }
             }
         } catch (e) {
             console.warn('group cache refresh failed', e);
